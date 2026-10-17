@@ -16,18 +16,20 @@
     root.innerHTML = '';
     A.app.view = 'editor';
     const d = E.d;
+    EU.saveErr = null;
     EU.saveIcon = h('span.save-state', { title: 'All changes saved' }, U.ic('cloudok', 20));
     EU.undoBtn = h('button.icon-btn', { title: 'Undo (Ctrl+Z)', onclick: () => E.undo() }, U.ic('undo'));
     EU.redoBtn = h('button.icon-btn', { title: 'Redo (Ctrl+Y)', onclick: () => E.redo() }, U.ic('redo'));
-    const title = h('input.title-input', {
+    // handlers read E.d when used: undo, redo and version restores replace the design object
+    const title = (EU.titleInput = h('input.title-input', {
       value: d.title,
       title: 'Rename design',
       onchange: (e) => {
-        d.title = e.target.value.trim() || 'Untitled design';
+        E.d.title = e.target.value = e.target.value.trim() || 'Untitled design';
         E.scheduleSave();
       },
       onkeydown: (e) => e.key === 'Enter' && e.target.blur(),
-    });
+    }));
     const isPrint = d.type === 'print';
     const top = h(
       'header.ed-top',
@@ -43,7 +45,7 @@
         E.isWB() ? h('button.icon-btn.light', { title: 'Timer', onclick: (e) => timerPopover(e.currentTarget) }, U.ic('timer')) : null,
         h('button.icon-btn.light', { title: 'Comments', onclick: () => EU.openPanel('comments') }, U.ic('comment')),
         h('button.icon-btn.light.hide-sm', { title: 'Insights', onclick: (e) => statsPopover(e.currentTarget) }, U.ic('chart')),
-        h('button.top-btn.hide-sm', { onclick: () => (isPrint ? A.X.print(d, d.pages.filter((p) => !p.hidden)) : A.Present.start()) }, U.ic(isPrint ? 'print' : 'play', 16), isPrint ? ' Print' : ' Present'),
+        h('button.top-btn.hide-sm', { onclick: () => (isPrint ? A.X.print(E.d, E.d.pages.filter((p) => !p.hidden)) : A.Present.start()) }, U.ic(isPrint ? 'print' : 'play', 16), isPrint ? ' Print' : ' Present'),
         h('button.btn.share', { onclick: () => EU.shareDialog() }, U.ic('share', 16), ' Share')
       )
     );
@@ -58,11 +60,21 @@
     E.scrollEl.addEventListener('pointerdown', (e) => {
       if (e.target === E.scrollEl || e.target === E.pagesEl) E.deselect();
     });
+    // Ctrl+wheel and trackpad pinch zoom in proportion to the gesture (pinches send many small deltas),
+    // once per frame and around the cursor
+    let wheel = null;
     E.scrollEl.addEventListener('wheel', (e) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        E.setZoom(E.zoom * (e.deltaY < 0 ? 1.1 : 0.9));
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      if (!wheel) {
+        wheel = { k: 0 };
+        requestAnimationFrame(() => {
+          if (E.d) E.setZoom(E.zoom * U.clamp(Math.exp(-wheel.k), 0.5, 2), wheel.at);
+          wheel = null;
+        });
       }
+      wheel.k += e.deltaY * (e.deltaMode === 1 ? 0.05 : e.deltaMode === 2 ? 1 : 0.002);
+      wheel.at = { x: e.clientX, y: e.clientY };
     }, { passive: false });
     EU.timeline = h('div.ed-timeline');
     EU.bottom = h('div.ed-bottom');
@@ -79,13 +91,23 @@
     EU.refreshUndo();
     EU.refreshTimeline();
     EU.refreshBottom();
-    if (EU.panel && EU.panelEl.isConnected) EU.renderPanel();
+    if (EU.titleInput && document.activeElement !== EU.titleInput) EU.titleInput.value = E.d.title;
+    // a closed panel stays closed (re-running the Draw panel would switch the pen back on)
+    if (EU.panel && EU.panelOpen && EU.panelEl.isConnected) EU.renderPanel();
   };
   EU.saveState = (s) => {
     if (!EU.saveIcon) return;
     EU.saveIcon.innerHTML = U.icon(s === 'saved' ? 'cloudok' : 'cloud', 20);
     EU.saveIcon.className = 'save-state ' + s;
     EU.saveIcon.title = s === 'saved' ? 'All changes saved' : s === 'error' ? 'Could not save – storage may be full' : 'Saving…';
+    // one sticky warning per run of failed saves, offering a way to keep the work
+    if (s === 'saved') { EU.saveErr?.remove?.(); EU.saveErr = null; }
+    if (s !== 'error' || EU.saveErr) return;
+    const d = E.d;
+    EU.saveErr = U.toast('Your changes could not be saved – storage may be full. Download a copy to keep them.', 'error', {
+      sticky: true,
+      action: { label: 'Download design file', onClick: async () => { const x = E.d?.id === d.id ? E.d : d; U.download(await S.exportDesignFile(x), U.safeName(x.title) + '.atelier.json'); } },
+    }) || true;
   };
   EU.refreshUndo = () => {
     if (!EU.undoBtn) return;
@@ -130,8 +152,10 @@
   EU.onSelectionChange = () => {
     const ctx = ['position', 'animate', 'effects', 'imageEdit', 'chart', 'table', 'crop'];
     if (EU.panelOpen && ctx.includes(EU.panel)) {
-      const el = E.selEls()[0];
-      const ok = EU.panel === 'position' || EU.panel === 'animate' || (el && ((EU.panel === 'effects' && el.type === 'text') || (EU.panel === 'imageEdit' && (el.type === 'image' || el.asset)) || (EU.panel === 'crop' && el.type === 'image') || (EU.panel === 'chart' && el.type === 'chart') || (EU.panel === 'table' && el.type === 'table')));
+      const els = E.selEls();
+      const fits = { effects: (x) => x.type === 'text', imageEdit: (x) => x.type === 'image' || x.asset, crop: (x) => x.type === 'image', chart: (x) => x.type === 'chart', table: (x) => x.type === 'table' }[EU.panel];
+      // typed panels edit every selected element, so all must fit; crop, chart and table data are per element
+      const ok = !fits || (els.length > 0 && els.every(fits) && (els.length === 1 || ['effects', 'imageEdit'].includes(EU.panel)));
       if (ok) EU.renderPanel();
       else EU.openPanel('elements');
     }
@@ -141,6 +165,7 @@
   // ---------- helpers used by toolbar & panels ----------
   const textLike = (el) => el.type === 'text' || (el.type === 'shape' && el.text);
   EU.apply = (fn, commit = true) => {
+    if (E.canEdit && !E.canEdit()) return;
     for (const el of E.selEls()) {
       fn(el);
       if (el.type === 'text') {
@@ -240,9 +265,10 @@
     const sep = () => h('span.tb-sep');
     if (!els.length) {
       add(
-        EU.swatchBtn(page.bg?.color || '#ffffff', 'Background colour', (c, fin) => { page.bg = { ...(page.bg || {}), color: c }; E.changed({ commit: fin, toolbar: fin }); }),
+        // the picker stays open across undo, which replaces the page object
+        EU.swatchBtn(page.bg?.color || '#ffffff', 'Background colour', (c, fin) => { if (E.canEdit && !E.canEdit()) return; const pg = E.page(); pg.bg = { ...(pg.bg || {}), color: c }; E.changed({ commit: fin, toolbar: fin }); }),
         EU.tbBtn('image', 'Background image', () => EU.openPanel('uploads', 'background'), { label: 'Background image' }),
-        page.bg?.asset ? EU.tbBtn('x', 'Remove background image', () => { delete page.bg.asset; E.changed(); }, { label: 'Remove image' }) : null,
+        page.bg?.asset ? EU.tbBtn('x', 'Remove background image', () => { if (E.canEdit && !E.canEdit()) return; delete E.page().bg.asset; E.changed(); }, { label: 'Remove image' }) : null,
         sep(),
         EU.tbBtn('animate', 'Animate page', () => EU.openPanel('animate', 'page'), { label: 'Animate' }),
         E.layout() === 'strip' || E.d.type === 'presentation' ? durationInput(page) : null,
@@ -255,25 +281,30 @@
     }
     const el = els[0];
     const same = els.every((x) => x.type === el.type);
-    const locked = els.some((x) => x.locked);
-    if (locked) {
-      add(h('span.tb-hint', U.ic('lock', 16), ' Locked'), EU.tbBtn('unlock', 'Unlock', () => E.toggleLock(), { label: 'Unlock' }));
+    if (page.locked) {
+      add(h('span.tb-hint', U.ic('lock', 16), ' Page locked'), EU.tbBtn('unlock', 'Unlock page', () => { E.page().locked = false; E.changed({ structure: true }); }, { label: 'Unlock page' }));
       return;
     }
-    if (same && (el.type === 'text' || (el.type === 'shape' && el.text))) textTools(add, sep, el);
+    if (els.some((x) => x.locked)) {
+      add(h('span.tb-hint', U.ic('lock', 16), ' Locked'), EU.tbBtn('unlock', 'Unlock', () => { E.selEls().forEach((x) => (x.locked = false)); E.changed(); }, { label: 'Unlock' }));
+      return;
+    }
+    // shape text being typed for the first time is still empty
+    const editing = E.editingId === el.id;
+    if (same && (el.type === 'text' || (el.type === 'shape' && (el.text || editing)))) textTools(add, sep, el);
     if (same && el.type === 'shape') {
       if (el.asset) {
         add(EU.tbBtn('sliders', 'Edit image', () => EU.openPanel('imageEdit'), { label: 'Edit image' }), EU.tbBtn('x', 'Remove image from frame', () => EU.apply((x) => delete x.asset), { label: 'Detach' }));
       } else add(EU.swatchBtn(el.fill, 'Fill colour', (c, fin) => EU.apply((x) => (x.fill = c), fin), { opts: { none: true } }));
       add(borderBtn(el));
-      if (['rect', 'rounded'].includes(el.shape) || el.asset) add(radiusBtn(el, 'radius'));
-      if (!el.text) add(EU.tbBtn('text', 'Add text', () => E.editText(el)));
+      if (['rect', 'rounded'].includes(el.shape)) add(radiusBtn(el, 'radius'));
+      if (!el.text && !editing) add(EU.tbBtn('text', 'Add text', () => E.editText(el)));
       add(EU.tbBtn('effects', 'Shadow', () => EU.apply((x) => (x.shadow = !x.shadow)), { active: !!el.shadow }));
     }
     if (same && el.type === 'image') {
       add(
         EU.tbBtn('sliders', 'Edit photo', () => EU.openPanel('imageEdit'), { label: 'Edit' }),
-        EU.tbBtn('crop', 'Crop', () => EU.openPanel('crop'), { label: 'Crop' }),
+        els.length === 1 ? EU.tbBtn('crop', 'Crop', () => EU.openPanel('crop'), { label: 'Crop' }) : null,
         EU.tbBtn('flip', 'Flip', (e) => U.menu(e.currentTarget, [{ label: 'Flip horizontal', icon: 'flip', onClick: () => E.flip('h') }, { label: 'Flip vertical', icon: 'flip', onClick: () => E.flip('v') }]), { label: 'Flip' }),
         radiusBtn(el, 'radius'),
         EU.tbBtn('effects', 'Shadow', () => EU.apply((x) => (x.shadow = !x.shadow)), { active: !!el.shadow })
@@ -326,8 +357,10 @@
     inp.addEventListener('change', () => { page.duration = U.clamp(+inp.value || 5, 0.5, 600); E.changed({ toolbar: false }); EU.refreshTimeline(); });
     return h('label.tb-dur', U.ic('timer', 16), inp, 's');
   }
+  // the menu can stay open across an undo, which replaces the page object
   function transitionMenu(anchor, page) {
-    U.menu(anchor, M.TRANSITIONS.map(([v, l]) => ({ label: l + (page.transition === v ? '  ✓' : ''), onClick: () => { page.transition = v; E.changed({ all: true }); } })));
+    const set = (v) => { const pg = E.d.pages.find((x) => x.id === page.id); if (pg) { pg.transition = v; E.changed({ all: true }); } };
+    U.menu(anchor, M.TRANSITIONS.map(([v, l]) => ({ label: l + (page.transition === v ? '  ✓' : ''), onClick: () => set(v) })));
   }
   function textTools(add, sep, el) {
     add(
@@ -416,6 +449,8 @@
     const els = E.selEls();
     const el = els[0];
     const grouped = els.length > 1 && els.every((x) => x.groupId && x.groupId === els[0].groupId);
+    // E.toggleLock unlocks a locked page first, then any locked element
+    const unlock = E.page().locked ? 'Unlock page' : els.some((x) => x.locked) ? 'Unlock' : '';
     if (!els.length) {
       return U.menu(anchor, [
         { label: 'Paste', icon: 'copy', shortcut: 'Ctrl+V', onClick: () => E.paste(), disabled: !E.clip },
@@ -444,7 +479,7 @@
       { label: 'Align to page…', icon: 'alignc', onClick: () => alignMenu(anchor) },
       { divider: true },
       els.length > 1 ? { label: grouped ? 'Ungroup' : 'Group', icon: 'group', shortcut: grouped ? 'Ctrl+Shift+G' : 'Ctrl+G', onClick: () => (grouped ? E.ungroup() : E.group()) } : null,
-      { label: el.locked ? 'Unlock' : 'Lock', icon: el.locked ? 'unlock' : 'lock', onClick: () => E.toggleLock() },
+      { label: unlock || 'Lock', icon: unlock ? 'unlock' : 'lock', onClick: () => E.toggleLock() },
       { label: el.link ? 'Edit link' : 'Link', icon: 'link', onClick: () => EU.linkDialog() },
       { label: 'Comment', icon: 'comment', onClick: () => EU.addComment(el) },
       el.type === 'image' ? { label: 'Set image as background', icon: 'image', onClick: () => E.setBackgroundFromImage() } : null,
@@ -478,7 +513,8 @@
       { label: 'Save as template', icon: 'template', onClick: () => A.app.saveUserTemplate(E.d) },
       { divider: true },
       { label: 'Keyboard shortcuts', icon: 'help', shortcut: '', onClick: () => A.Home.shortcuts() },
-      { label: 'Move to trash', icon: 'trash', danger: true, onClick: async () => { if (await U.confirm('Move this design to the trash? It stays there for 30 days.', 'Move to trash', true)) { await E.save(); await S.trashDesign(d.id); A.app.go('#/home'); } } },
+      // trash the open copy: closing the editor saves it again
+      { label: 'Move to trash', icon: 'trash', danger: true, onClick: async () => { if (await U.confirm('Move this design to the trash? It stays there for 30 days.', 'Move to trash', true)) { E.d.deletedAt = Date.now(); await E.save(); A.app.go('#/home'); } } },
     ]);
   }
 
@@ -569,7 +605,7 @@
     const def = preset || (d.type === 'video' ? 'video' : d.type === 'presentation' ? 'pdf' : d.type === 'print' ? 'pdfprint' : 'png');
     const fmt = h('select.input', formats.map(([v, l]) => h('option', { value: v, selected: v === def ? true : null }, l)));
     const size = h('input', { type: 'range', min: 0.5, max: 4, step: 0.25, value: 1 });
-    const sizeLbl = h('span.muted');
+    const sizeLbl = h('span.muted'), sizeVal = h('span');
     const transparent = h('input', { type: 'checkbox' });
     const compress = h('input', { type: 'checkbox' });
     const bleed = h('input', { type: 'checkbox' });
@@ -577,19 +613,25 @@
     const pageChecks = d.pages.map((p, i) => h('input', { type: 'checkbox', checked: !p.hidden, 'data-i': i }));
     const progress = h('div.progress', h('div.bar'));
     const opts = h('div.dl-opts');
+    // only the labels change while the slider is dragged: rebuilding the options would end the drag
+    const updSize = () => {
+      sizeVal.textContent = size.value;
+      sizeLbl.textContent = `${Math.round(d.width * size.value)} × ${Math.round(d.height * size.value)} px`;
+    };
     const upd = () => {
       const f = fmt.value;
-      sizeLbl.textContent = `${Math.round(d.width * size.value)} × ${Math.round(d.height * size.value)} px`;
+      updSize();
       opts.innerHTML = '';
-      if (['png', 'jpg', 'pdf', 'pdfprint', 'pptx', 'video'].includes(f)) opts.append(h('label.field', h('span', 'Size ×', size.value), size, sizeLbl));
+      if (['png', 'jpg', 'pdf', 'pdfprint', 'pptx', 'video'].includes(f)) opts.append(h('label.field', h('span', 'Size ×', sizeVal), size, sizeLbl));
       if (f === 'png') opts.append(h('label.check', transparent, ' Transparent background'));
-      if (['jpg', 'pdf', 'pdfprint', 'png'].includes(f)) opts.append(h('label.check', compress, ' Compress file (lower quality)'));
+      // PNG is lossless: the browser ignores a quality setting for it
+      if (['jpg', 'pdf', 'pdfprint'].includes(f)) opts.append(h('label.check', compress, ' Compress file (lower quality)'));
       if (f === 'pdfprint') opts.append(h('label.check', bleed, ' Print bleed'), h('label.check', marks, ' Crop marks'));
       if (f === 'video') opts.append(h('p.muted', 'Video plays each page for its duration with animations. Recording happens in real time.'));
       if (f === 'html') opts.append(h('p.muted', 'Creates one self-contained web page. Each page becomes a section; links stay clickable. You can host it for free on GitHub Pages.'));
     };
     fmt.addEventListener('change', upd);
-    size.addEventListener('input', upd);
+    size.addEventListener('input', updSize);
     upd();
     const pagesBox = h('details.pages-box', h('summary', 'Select pages'), h('div.page-checks', pageChecks.map((c, i) => h('label.check', c, ' Page ' + (i + 1) + (d.pages[i].title ? ' – ' + d.pages[i].title : '')))));
     let busy = false;
@@ -607,7 +649,9 @@
           progress.classList.add('on');
           const onProgress = (p) => (bar.style.width = Math.round(p * 100) + '%');
           try {
-            await EU.runExport(fmt.value, pages, { scale: +size.value, transparent: transparent.checked, compress: compress.checked, bleed: bleed.checked, marks: marks.checked, onProgress });
+            // a box ticked for another format and then hidden doesn't apply (JPG has no transparency)
+            const f = fmt.value;
+            await EU.runExport(f, pages, { scale: +size.value, transparent: f === 'png' && transparent.checked, compress: compress.checked, bleed: bleed.checked, marks: marks.checked, onProgress });
             U.toast('Download ready', 'ok');
           } catch (e) {
             console.error(e);
@@ -686,9 +730,11 @@
     const k = { px: 1, in: 96, cm: 96 / 2.54, mm: 96 / 25.4 };
     const wIn = h('input.input', { type: 'number', value: W, min: 1 });
     const hIn = h('input.input', { type: 'number', value: H, min: 1 });
-    const read = () => { W = Math.round(+wIn.value * k[unit.value]); H = Math.round(+hIn.value * k[unit.value]); };
-    unit.addEventListener('change', () => { wIn.value = U.round(W / k[unit.value], 2); hIn.value = U.round(H / k[unit.value], 2); });
-    const list = h('div.preset-list', presets.map(([n, w, hh]) => h('button.preset', { onclick: (ev) => { W = w; H = hh; unit.value = 'px'; wIn.value = w; hIn.value = hh; U.$$('.preset', list).forEach((b) => b.classList.remove('on')); ev.currentTarget.classList.add('on'); } }, h('b', n), h('span.muted', `${w} × ${hh}`))));
+    // the fields hold values in unit `u`; a unit change converts what was typed
+    let u = 'px';
+    const read = () => { W = Math.round(+wIn.value * k[u]); H = Math.round(+hIn.value * k[u]); };
+    unit.addEventListener('change', () => { read(); u = unit.value; wIn.value = U.round(W / k[u], 2); hIn.value = U.round(H / k[u], 2); });
+    const list = h('div.preset-list', presets.map(([n, w, hh]) => h('button.preset', { onclick: (ev) => { W = w; H = hh; unit.value = u = 'px'; wIn.value = w; hIn.value = hh; U.$$('.preset', list).forEach((b) => b.classList.remove('on')); ev.currentTarget.classList.add('on'); } }, h('b', n), h('span.muted', `${w} × ${hh}`))));
     const translate = h('select.input', h('option', { value: '' }, 'Keep language'), ...['Spanish', 'French', 'German', 'Portuguese', 'Italian', 'Japanese', 'Korean', 'Chinese (Simplified)', 'Arabic', 'Hindi'].map((l) => h('option', { value: l }, 'Translate to ' + l)));
     const doIt = async (copy) => {
       read();
@@ -736,9 +782,11 @@
       if (vd.thumb) img.src = vd.thumb;
       list.append(h('div.version', img, h('div.v-info', h('b', v.label || new Date(v.ts).toLocaleString()), h('div.muted', U.timeAgo(v.ts) + ' · ' + vd.pages.length + ' page(s)')), h('button.btn.sm', {
         onclick: async () => {
+          E.finishText();
           await E.snapshot('Before restoring');
           const restored = JSON.parse(v.data);
-          restored.id = E.d.id;
+          // only the content goes back: the name, star, folder and creation date stay as they are now
+          for (const key of ['id', 'title', 'starred', 'folderId', 'createdAt']) restored[key] = E.d[key];
           E.d = restored;
           E.pi = 0; E.sel = [];
           await S.ensureAssetURLs(S.designAssetIds(E.d));
@@ -770,8 +818,9 @@
       block.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/x-page', String(i)); });
       block.addEventListener('dragover', (e) => e.preventDefault());
       block.addEventListener('drop', (e) => {
-        const from = +e.dataTransfer.getData('text/x-page');
-        if (isNaN(from) || from === i) return;
+        // only a dragged page block reorders: files and panel items carry no page index ('' would read as page 1)
+        const raw = e.dataTransfer.getData('text/x-page'), from = +raw;
+        if (raw === '' || isNaN(from) || from === i) return;
         e.preventDefault();
         const [pg] = E.d.pages.splice(from, 1);
         E.d.pages.splice(i, 0, pg);
@@ -804,10 +853,18 @@
     const p = E.page();
     const d = p.duration || 5;
     if (d < 1) return U.toast('Page is too short to split');
-    E.duplicatePage(E.pi);
+    E.finishText();
+    // one undo step: the second half is a copy of the page (as E.duplicatePage makes it) taking the rest of the time
+    const q = U.clone(p), ids = {};
+    q.id = U.uid('p_');
+    q.elements.forEach((e) => (ids[e.id] = e.id = U.uid('e_')));
+    q.elements.forEach((e) => {
+      if (e.c1) e.c1 = ids[e.c1];
+      if (e.c2) e.c2 = ids[e.c2];
+    });
     p.duration = U.round(d / 2, 1);
-    E.page().duration = U.round(d / 2, 1);
-    E.changed({ structure: true });
+    q.duration = U.round(d - p.duration, 1);
+    E.addPage(E.pi + 1, q);
     U.toast('Page split into two scenes');
   }
 
@@ -853,8 +910,9 @@
       card.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/x-page', String(i)));
       card.addEventListener('dragover', (e) => e.preventDefault());
       card.addEventListener('drop', (e) => {
+        const raw = e.dataTransfer.getData('text/x-page'), from = +raw;
+        if (raw === '') return;
         e.preventDefault();
-        const from = +e.dataTransfer.getData('text/x-page');
         if (isNaN(from) || from === i) return;
         const [pg] = E.d.pages.splice(from, 1);
         E.d.pages.splice(i, 0, pg);

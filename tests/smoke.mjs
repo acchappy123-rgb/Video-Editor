@@ -15,7 +15,10 @@ const OUT = process.env.OUT || 'tests/out';
 fs.mkdirSync(OUT, { recursive: true });
 const PORT = +process.env.PORT || 8765;
 const url = `http://localhost:${PORT}/index.html`;
-const srv = spawn('npx', ['--yes', 'http-server', 'app', '-p', String(PORT), '-c-1', '-s'], { stdio: 'ignore' });
+// Detached so the whole process group (npx + http-server) can be killed at the end.
+const srv = spawn('npx', ['--yes', 'http-server', 'app', '-p', String(PORT), '-c-1', '-s'], { stdio: 'ignore', detached: true });
+const stopServer = () => { try { process.kill(-srv.pid, 'SIGTERM'); } catch (e) {} };
+process.on('exit', stopServer);
 await new Promise((r) => setTimeout(r, 1500));
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
@@ -49,7 +52,7 @@ try {
 } finally {
   if (errors.length) { console.log('\nErrors:\n' + errors.join('\n')); failed += errors.length; }
   await browser.close();
-  srv.kill();
+  stopServer();
   console.log(failed ? `\n${failed} problem(s)` : '\nAll good');
   process.exit(failed ? 1 : 0);
 }

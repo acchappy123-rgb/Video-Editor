@@ -58,17 +58,14 @@
         const json = JSON.parse(await f.text());
         if (json.app === 'atelier-design') {
           const d = await S.importDesignFile(json);
+          await app.loadFonts();
           U.toast('Imported “' + d.title + '”', 'ok');
           await app.notify('Imported design “' + d.title + '”');
           if (!inEditor) app.go('#/design/' + d.id);
           return d;
         }
         if (json.app === 'atelier') {
-          if (await U.confirm('Restore this backup? Designs with the same id will be replaced.', 'Restore')) {
-            await S.importBackup(json);
-            await app.loadState();
-            U.toast('Backup restored', 'ok');
-          }
+          if (await U.confirm('Restore this backup? Designs with the same id will be replaced.', 'Restore')) await app.restoreBackup(json);
           return;
         }
         throw new Error('This JSON file is not an Atelier design or backup');
@@ -111,11 +108,26 @@
     }
   };
 
+  // The open design is saved and closed first, so its in-memory copy can't overwrite the restored one; route() reopens it.
+  app.restoreBackup = async (json) => {
+    if (json.app !== 'atelier') throw new Error('Not an Atelier backup file');
+    if (A.E.d) await A.E.close();
+    try {
+      await S.importBackup(json);
+      await app.loadState();
+      app.applyTheme();
+      U.toast('Backup restored', 'ok');
+    } finally {
+      await app.route();
+    }
+  };
+
   app.saveUserTemplate = async (d) => {
     const name = await U.prompt('Template name', d.title);
     if (!name) return;
-    const thumb = d.thumb || (await A.R.thumbnail(d));
-    const tpl = { id: U.uid('ut_'), name, type: d.type, w: d.width, h: d.height, tags: 'my template', thumb, design: U.clone({ ...d, thumb: undefined, comments: [] }) };
+    // d.thumb is only as fresh as the last autosave
+    const thumb = (await A.R.thumbnail(d)) || d.thumb;
+    const tpl = { id: U.uid('ut_'), name, type: d.type, w: d.width, h: d.height, tags: 'my template', thumb, design: U.clone({ ...d, thumb: undefined, comments: [], starred: undefined, folderId: undefined, deletedAt: undefined }) };
     app.userTemplates = [tpl, ...app.userTemplates];
     await S.setKv('userTemplates', app.userTemplates);
     U.toast('Saved to your templates', 'ok');
@@ -136,7 +148,8 @@
   };
   async function doRoute() {
     U.closePop();
-    document.querySelectorAll('.modal-back').forEach((m) => m.remove());
+    // close() also drops each dialog's key listener and settles a pending prompt/confirm
+    document.querySelectorAll('.modal-back').forEach((m) => (m.close ? m.close() : m.remove()));
     const hash = location.hash || '#/home';
     const [, page, arg] = hash.split('/');
     if (page !== 'design' && A.E.d) await A.E.close();
@@ -188,14 +201,21 @@
     document.addEventListener('paste', (e) => A.E.onPaste(e));
     addEventListener('hashchange', app.route);
     addEventListener('resize', U.debounce(() => { if (app.view === 'editor' && A.E.d) A.E.drawOverlay(); }, 150));
-    addEventListener('beforeunload', () => { if (A.E.d) A.E.save(); });
-    document.addEventListener('visibilitychange', () => { if (document.hidden && A.E.d) A.E.save(); });
-    // drop files anywhere on the home screen
+    // E.save writes before it renders the thumbnail, so a save started while the page goes away still lands
+    addEventListener('pagehide', () => A.E.d && A.E.saveNow.flush({ thumb: false }));
+    document.addEventListener('visibilitychange', () => document.hidden && A.E.d && A.E.saveNow.flush());
+    addEventListener('beforeunload', (e) => {
+      if (!A.E.d || !/\b(pending|saving|error)\b/.test(A.EU.saveIcon?.className)) return;
+      e.preventDefault();
+      e.returnValue = '';
+    });
+    // drop files anywhere: the canvas handles its own drops, elsewhere the browser must not open the file
     addEventListener('dragover', (e) => e.preventDefault());
     addEventListener('drop', async (e) => {
-      if (app.view === 'editor') return;
+      const files = [...(e.dataTransfer?.files || [])];
+      if (e.defaultPrevented || (!files.length && e.target.closest?.('input, textarea'))) return;
       e.preventDefault();
-      for (const f of e.dataTransfer?.files || []) await app.importFile(f);
+      for (const f of files) await app.importFile(f, { toEditor: true });
       if (app.view === 'home') app.route();
     });
     if (!(await S.kv('welcomed', false))) {

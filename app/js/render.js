@@ -6,6 +6,8 @@
   const R = (A.R = {});
   const esc = U.esc;
   const n = (v) => Math.round(v * 100) / 100;
+  // def ids stay valid in id="…" and url(#…) whatever an element or page id holds
+  const did = (ctx, tag, id) => (ctx.idp + tag + id).replace(/[^\w-]/g, '_');
 
   // ---------- shapes ----------
   const poly = (pts) => 'M' + pts.map((p) => n(p[0]) + ' ' + n(p[1])).join('L') + 'Z';
@@ -68,7 +70,7 @@
     if (!fill || fill === 'transparent' || fill === 'none') return 'none';
     if (typeof fill === 'string' && fill.startsWith('grad:')) {
       const [, a, b, ang = '90', kind = 'linear'] = fill.split(':');
-      const id = ctx.idp + 'g' + key;
+      const id = did(ctx, 'g', key);
       if (kind === 'radial') ctx.defs.push(`<radialGradient id="${id}"><stop offset="0" stop-color="${esc(a)}"/><stop offset="1" stop-color="${esc(b)}"/></radialGradient>`);
       else {
         const r = ((+ang - 90) * Math.PI) / 180;
@@ -107,26 +109,22 @@
         lines.push({ t: s, prefix: first ? prefix : '', indent: pw });
         first = false;
       };
-      for (const w of p.split(/(\s+)/)) {
+      for (let w of p.split(/(\s+)/)) {
         if (!w) continue;
-        const test = cur + w;
-        if (U.measure(test.trimEnd(), font, ls) <= avail || !cur.trim()) {
-          if (!cur.trim() && w.trim() && U.measure(w, font, ls) > avail) {
-            let chunk = cur;
-            for (const ch of w) {
-              if (chunk && U.measure(chunk + ch, font, ls) > avail) {
-                push(chunk);
-                chunk = ch;
-              } else chunk += ch;
-            }
-            cur = chunk;
-            continue;
-          }
-          cur = test;
-        } else {
+        if (cur.trim() && U.measure((cur + w).trimEnd(), font, ls) > avail) {
           push(cur.trimEnd());
-          cur = w.trimStart();
+          cur = '';
+          w = w.trimStart();
         }
+        // a word wider than the line is broken by characters, wherever it starts
+        if (!cur.trim() && w.trim() && U.measure(w, font, ls) > avail) {
+          for (const ch of w) {
+            if (cur && U.measure(cur + ch, font, ls) > avail) {
+              push(cur);
+              cur = ch;
+            } else cur += ch;
+          }
+        } else cur += w;
       }
       push(cur.trimEnd());
     }
@@ -135,6 +133,11 @@
     return { lines, lineH, height: lines.length * lineH, font, ls };
   };
   R.textHeight = (el) => R.layoutText(el, el.w).height;
+  // Sizes a text box to its content: curved text takes its arc's box, straight text its wrapped height.
+  R.fitText = (el) => {
+    if (el.curve) { const g = R.curveGeom(el); el.w = g.w; el.h = g.h; }
+    else el.h = R.textHeight(el);
+  };
 
   const textAttrs = (el) =>
     `font-family="${esc(M.fontStack(el.font))}" font-size="${n(el.size)}" font-weight="${el.bold ? 700 : 400}" font-style="${el.italic ? 'italic' : 'normal'}"` +
@@ -144,35 +147,35 @@
 
   // Returns an SVG fragment for the text of el inside box {x,y,w,h,valign}.
   R.textSVG = (el, ctx, box, chars = null) => {
-    if (el.curve) return curvedText(el, ctx, chars);
-    const L = R.layoutText(el, box.w);
+    // curved text is one run along its arc, and gets the same effects as straight text
+    const L = el.curve ? { lines: [] } : R.layoutText(el, box.w);
     let lines = L.lines;
     if (chars != null) {
+      // typewriter: count code points of the text only; a bullet or number appears with its line's first character
       let left = chars;
       lines = lines.map((l) => {
-        const full = l.prefix + l.t;
-        const take = Math.max(0, Math.min(full.length, left));
-        left -= full.length;
-        return { ...l, prefix: '', t: full.slice(0, take), indent: l.prefix ? 0 : l.indent };
+        const cps = [...l.t], take = Math.max(0, Math.min(cps.length, left));
+        left -= cps.length;
+        return { ...l, prefix: take ? l.prefix : '', t: cps.slice(0, take).join('') };
       });
     }
-    const anchor = el.align === 'center' ? 'middle' : el.align === 'right' ? 'end' : 'start';
+    const anchor = el.curve || el.align === 'center' ? 'middle' : el.align === 'right' ? 'end' : 'start';
     const ax = anchor === 'middle' ? box.x + box.w / 2 : anchor === 'end' ? box.x + box.w : box.x;
     const y0 = box.y + (box.valign ? (box.h - L.height) / 2 : 0);
     const pos = (l, i) => ({ x: anchor === 'start' && !l.prefix ? ax + l.indent : ax, y: y0 + i * L.lineH + (L.lineH - el.size) / 2 + el.size * 0.82 });
-    const body = lines.map((l, i) => {
+    const body = el.curve ? curvedText(el, ctx, chars) : lines.map((l, i) => {
       const p = pos(l, i);
       return `<tspan x="${n(p.x)}" y="${n(p.y)}">${esc(l.prefix + l.t) || ' '}</tspan>`;
     }).join('');
     const common = textAttrs(el) + ` text-anchor="${anchor}"`;
     const color = el.color || '#000';
     const eff = el.effect || {};
-    const T = (fill, extra = '') => `<text ${common} fill="${R.paint(fill, ctx, el.id + 't')}" ${extra}>${body}</text>`;
+    const T = (fill, extra = '', k = 't') => `<text ${common} fill="${R.paint(fill, ctx, el.id + k)}" ${extra}>${body}</text>`;
     const s = el.size;
     const off = ((eff.offset ?? 50) / 100) * s * 0.18;
     const dirR = (((eff.direction ?? 45) - 90) * Math.PI) / 180;
     const ox = n(Math.cos(dirR + Math.PI / 2) * off), oy = n(Math.sin(dirR + Math.PI / 2) * off);
-    const fid = ctx.idp + 'f' + el.id;
+    const fid = did(ctx, 'f', el.id);
     switch (eff.type) {
       case 'shadow':
         ctx.defs.push(`<filter id="${fid}" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="${ox}" dy="${oy}" stdDeviation="${n(((eff.blur ?? 20) / 100) * s * 0.25)}" flood-color="${esc(eff.color || '#000000')}" flood-opacity="${n(1 - (eff.transparency ?? 60) / 100)}"/></filter>`);
@@ -181,9 +184,9 @@
         ctx.defs.push(`<filter id="${fid}" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="${n(s * 0.06)}" stdDeviation="${n(s * 0.12)}" flood-color="#000" flood-opacity="${n(((eff.intensity ?? 50) / 100) * 0.7)}"/></filter>`);
         return T(color, `filter="url(#${fid})"`);
       case 'hollow':
-        return T('none', `stroke="${esc(color)}" stroke-width="${n(((eff.thickness ?? 50) / 100) * s * 0.08 + 0.5)}" stroke-linejoin="round"`);
+        return T('none', `stroke="${R.paint(color, ctx, el.id + 's')}" stroke-width="${n(((eff.thickness ?? 50) / 100) * s * 0.08 + 0.5)}" stroke-linejoin="round"`);
       case 'splice':
-        return T(eff.color || '#ffbd59', `transform="translate(${ox} ${oy})"`) + T('none', `stroke="${esc(color)}" stroke-width="${n(((eff.thickness ?? 50) / 100) * s * 0.06 + 0.5)}" stroke-linejoin="round"`);
+        return T(eff.color || '#ffbd59', `transform="translate(${ox} ${oy})"`) + T('none', `stroke="${R.paint(color, ctx, el.id + 's')}" stroke-width="${n(((eff.thickness ?? 50) / 100) * s * 0.06 + 0.5)}" stroke-linejoin="round"`);
       case 'echo': {
         const c = eff.color || color;
         return T(c, `opacity="0.25" transform="translate(${n(ox * 2)} ${n(oy * 2)})"`) + T(c, `opacity="0.5" transform="translate(${ox} ${oy})"`) + T(color);
@@ -196,12 +199,18 @@
       case 'neon': {
         const k = (eff.intensity ?? 50) / 100;
         ctx.defs.push(`<filter id="${fid}" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur in="SourceGraphic" stdDeviation="${n(s * 0.04 + s * 0.12 * k)}" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`);
-        const [r, g, b] = U.hexToRgb(U.isColor(color) ? color : '#ff66c4');
-        const light = U.rgbToHex(r + (255 - r) * 0.55, g + (255 - g) * 0.55, b + (255 - b) * 0.55);
-        return `<g filter="url(#${fid})">${T(color)}</g>` + T(light);
+        const lift = (c) => {
+          const [r, g, b] = U.hexToRgb(U.isColor(c) ? c : '#ff66c4');
+          return U.rgbToHex(r + (255 - r) * 0.55, g + (255 - g) * 0.55, b + (255 - b) * 0.55);
+        };
+        // a gradient glows in its own stops, lightened
+        const light = String(color).startsWith('grad:') ? color.split(':').map((v, i) => (i === 1 || i === 2 ? lift(v) : v)).join(':') : lift(color);
+        return `<g filter="url(#${fid})">${T(color)}</g>` + T(light, '', 'tl');
       }
       case 'background': {
         const pad = s * 0.25 * ((eff.spread ?? 50) / 50);
+        // along an arc the highlight is a wide rounded stroke behind the glyphs
+        if (el.curve) return T(eff.color || '#ffde59', `stroke="${R.paint(eff.color || '#ffde59', ctx, el.id + 'b')}" stroke-width="${n(pad * 2)}" stroke-linejoin="round" opacity="${n(1 - (eff.transparency ?? 0) / 100)}"`, 'b') + T(color);
         const rad = ((eff.roundness ?? 30) / 100) * L.lineH * 0.5;
         const rects = lines.map((l, i) => {
           if (!(l.prefix + l.t).trim()) return '';
@@ -230,7 +239,7 @@
   function curvedText(el, ctx, chars) {
     const g = R.curveGeom(el);
     const s = el.size, cx = el.w / 2, r = g.r;
-    const pid = ctx.idp + 'cp' + el.id;
+    const pid = did(ctx, 'cp', el.id);
     let d;
     if (el.curve > 0) {
       const cy = r + 0.85 * s;
@@ -240,8 +249,8 @@
       d = `M${n(cx)} ${n(cy - r)}A${n(r)} ${n(r)} 0 1 0 ${n(cx)} ${n(cy + r)}A${n(r)} ${n(r)} 0 1 0 ${n(cx)} ${n(cy - r)}`;
     }
     ctx.defs.push(`<path id="${pid}" d="${d}"/>`);
-    const t = chars != null ? g.txt.slice(0, chars) : g.txt;
-    return `<text ${textAttrs(el)} text-anchor="middle" fill="${R.paint(el.color, ctx, el.id + 't')}"><textPath href="#${pid}" xlink:href="#${pid}" startOffset="50%">${esc(t)}</textPath></text>`;
+    const t = chars != null ? [...g.txt].slice(0, chars).join('') : g.txt;
+    return `<textPath href="#${pid}" xlink:href="#${pid}" startOffset="50%">${esc(t)}</textPath>`;
   }
 
   // ---------- image adjustments as an SVG filter ----------
@@ -299,41 +308,61 @@
     if (i !== s.length) throw 0;
     return v;
   }
-  R.colName = (c) => String.fromCharCode(65 + c);
-  R.evalCell = (cells, r, c, depth = 0) => {
+  // A, B … Z, AA, AB …
+  R.colName = (c) => {
+    let s = '';
+    for (c++; c > 0; c = Math.floor((c - 1) / 26)) s = String.fromCharCode(65 + ((c - 1) % 26)) + s;
+    return s;
+  };
+  const cellAt = (x) => {
+    const m = x.match(/^([A-Z]+)(\d+)$/);
+    return [+m[2] - 1, [...m[1]].reduce((v, ch) => v * 26 + ch.charCodeAt(0) - 64, 0) - 1];
+  };
+  // Each formula is evaluated once per memo (share one across a table); a cycle gives #CIRC,
+  // and a formula that reads an error cell returns that error.
+  R.evalCell = (cells, r, c, memo = new Map()) => {
     const raw = cells[r]?.[c];
     if (raw == null) return '';
     const s = String(raw);
     if (!s.startsWith('=')) return s;
-    if (depth > 30) return '#REF';
+    const key = r + ',' + c;
+    if (memo.has(key)) return memo.get(key) ?? '#CIRC';
+    memo.set(key, null);
+    let res;
     try {
-      const ref = (x) => {
-        const m = x.match(/^([A-Z])(\d+)$/);
-        const v = parseFloat(R.evalCell(cells, +m[2] - 1, m[1].charCodeAt(0) - 65, depth + 1));
-        return isNaN(v) ? 0 : v;
+      const val = (rr, cc) => {
+        const v = R.evalCell(cells, rr, cc, memo);
+        if (v[0] === '#' && String(cells[rr][cc]).startsWith('=')) throw v;
+        return parseFloat(v);
       };
       const range = (a, b) => {
-        const [c1, r1] = [a.charCodeAt(0) - 65, +a.slice(1) - 1], [c2, r2] = [b.charCodeAt(0) - 65, +b.slice(1) - 1];
+        const [r1, c1] = cellAt(a), [r2, c2] = cellAt(b);
         const out = [];
         for (let rr = Math.min(r1, r2); rr <= Math.max(r1, r2); rr++)
           for (let cc = Math.min(c1, c2); cc <= Math.max(c1, c2); cc++) {
-            const v = parseFloat(R.evalCell(cells, rr, cc, depth + 1));
+            const v = val(rr, cc);
             if (!isNaN(v)) out.push(v);
           }
         return out;
       };
       let ex = s.slice(1).toUpperCase();
-      ex = ex.replace(/(SUM|AVERAGE|AVG|MIN|MAX|COUNT)\(([A-Z]\d+):([A-Z]\d+)\)/g, (_, fn, a, b) => {
+      ex = ex.replace(/(SUM|AVERAGE|AVG|MIN|MAX|COUNT)\(([A-Z]+\d+):([A-Z]+\d+)\)/g, (_, fn, a, b) => {
         const xs = range(a, b);
         const v = fn === 'SUM' ? xs.reduce((p, q) => p + q, 0) : fn === 'COUNT' ? xs.length : !xs.length ? 0 : fn === 'MIN' ? Math.min(...xs) : fn === 'MAX' ? Math.max(...xs) : xs.reduce((p, q) => p + q, 0) / xs.length;
         return '(' + v + ')';
       });
-      ex = ex.replace(/[A-Z]\d+/g, (m) => '(' + ref(m) + ')');
+      // not the exponent of a number such as 1E5
+      ex = ex.replace(/(?<![\d.])[A-Z]+\d+/g, (m) => {
+        const v = val(...cellAt(m));
+        return '(' + (isNaN(v) ? 0 : v) + ')';
+      });
       const v = arith(ex);
-      return Number.isFinite(v) ? String(U.round(v, 4)) : '#DIV/0';
+      res = Number.isFinite(v) ? String(U.round(v, 4)) : '#DIV/0';
     } catch (e) {
-      return '#ERR';
+      res = typeof e === 'string' ? e : '#ERR';
     }
+    memo.set(key, res);
+    return res;
   };
 
   // ---------- connectors ----------
@@ -341,8 +370,10 @@
     const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
     const dx = toward.x - cx, dy = toward.y - cy;
     if (!dx && !dy) return { x: cx, y: cy };
-    const sx = b.w / 2 / Math.abs(dx || 1e-9), sy = b.h / 2 / Math.abs(dy || 1e-9);
-    const k = Math.min(sx, sy);
+    // meet the outline in the shape's own (unrotated) frame
+    const t = (-(b.rot || 0) * Math.PI) / 180, ex = Math.abs(dx * Math.cos(t) - dy * Math.sin(t)) / (b.w / 2), ey = Math.abs(dx * Math.sin(t) + dy * Math.cos(t)) / (b.h / 2);
+    const kind = b.type === 'shape' ? b.shape : '';
+    const k = 1 / (kind === 'ellipse' || kind === 'ring' ? Math.hypot(ex, ey) : kind === 'diamond' ? ex + ey : Math.max(ex, ey));
     return { x: cx + dx * k, y: cy + dy * k };
   };
   R.lineEnds = (el, page) => {
@@ -370,26 +401,28 @@
     const st = { dx: 0, dy: 0, s: 1, sx: 1, r: 0, o: 1, chars: null };
     if (t == null) return st;
     const a = el.anim || {};
-    const kind = a.in && a.in !== 'none' ? a.in : page && page.anim && page.anim !== 'none' ? page.anim : null;
+    const own = a.in && a.in !== 'none';
+    const kind = own ? a.in : page && page.anim && page.anim !== 'none' ? page.anim : null;
     const sp = a.speed || 1;
     const D = 0.7 / sp;
-    const delay = a.delay ?? idx * 0.12;
-    const [vx, vy] = DIRS[a.dir || 'up'];
+    // the delay is the one the Animate panel shows; only a page animation staggers by layer, and it ends within the page
+    const delay = a.delay ?? (kind && !own ? Math.min(idx * 0.12, Math.max(0, (dur || 5) - D - 0.2)) : 0);
+    const [vx, vy] = DIRS[a.dir] || DIRS[kind === 'pan' ? 'right' : 'up'];
     if (kind) {
-      const len = String(el.text || '').length;
+      const len = [...String(el.text || '').replace(/\n/g, '')].length;
       const DD = kind === 'typewriter' ? Math.max(0.4, len * 0.05) / sp : kind === 'drift' ? D * 2 : D;
       const p = U.clamp((t - delay) / DD, 0, 1), e = easeOut(p);
       switch (kind) {
         case 'fade': st.o = e; break;
         case 'rise': st.o = e; st.dx = vx * (1 - e) * 60; st.dy = vy * (1 - e) * 60; break;
-        case 'pan': st.o = e; if (vx) st.dx = vx * (1 - e) * 160; else st.dx = -(1 - e) * 160; break;
+        case 'pan': st.o = e; st.dx = vx * (1 - e) * 160; st.dy = vy * (1 - e) * 160; break;
         case 'drift': st.o = e; st.dx = vx * (1 - e) * 30; st.dy = vy * (1 - e) * 30; break;
         case 'pop': st.o = Math.min(1, p * 4); st.s = Math.max(0.01, backOut(p)); break;
         case 'zoom': st.o = e; st.s = 0.3 + 0.7 * e; break;
         case 'tumble': st.o = e; st.r = (1 - e) * -120; st.s = 0.4 + 0.6 * e; break;
         case 'bounce': st.o = Math.min(1, p * 3); st.dy = -(1 - bounce(p)) * 120; break;
         case 'wipe': st.sx = Math.max(0.001, e); break;
-        case 'typewriter': st.chars = Math.floor(p * len); if (el.type !== 'text' && !el.text) st.o = e; break;
+        case 'typewriter': st.chars = p >= 1 ? null : Math.floor(p * len); if (el.type !== 'text' && !el.text) st.o = e; break;
       }
     }
     const em = a.emph;
@@ -438,25 +471,25 @@
     const { p1, p2 } = R.lineEnds(el, ctx.page);
     const d = el.elbow ? `M${n(p1.x)} ${n(p1.y)}H${n((p1.x + p2.x) / 2)}V${n(p2.y)}H${n(p2.x)}` : el.curved ? `M${n(p1.x)} ${n(p1.y)}Q${n((p1.x + p2.x) / 2)} ${n(Math.min(p1.y, p2.y) - Math.abs(p2.x - p1.x) * 0.3)} ${n(p2.x)} ${n(p2.y)}` : `M${n(p1.x)} ${n(p1.y)}L${n(p2.x)} ${n(p2.y)}`;
     const color = esc(el.stroke || '#000');
-    const ms = el.start && el.start !== 'none' ? ` marker-start="${marker(ctx, ctx.idp + 'ms' + el.id, el.start, color)}"` : '';
-    const me = el.end && el.end !== 'none' ? ` marker-end="${marker(ctx, ctx.idp + 'me' + el.id, el.end, color)}"` : '';
+    const ms = el.start && el.start !== 'none' ? ` marker-start="${marker(ctx, did(ctx, 'ms', el.id), el.start, color)}"` : '';
+    const me = el.end && el.end !== 'none' ? ` marker-end="${marker(ctx, did(ctx, 'me', el.id), el.end, color)}"` : '';
     const da = dashArray(el.dash, el.strokeWidth);
     const tr = st.dx || st.dy ? ` transform="translate(${n(st.dx)} ${n(st.dy)})"` : '';
-    return `<g data-id="${el.id}" opacity="${n((el.opacity ?? 1) * st.o)}"${tr}><path d="${d}" fill="none" stroke="transparent" stroke-width="${Math.max(16, el.strokeWidth + 12)}"/><path d="${d}" fill="none" stroke="${color}" stroke-width="${n(el.strokeWidth)}" stroke-linecap="${el.dash === 'dotted' ? 'round' : 'butt'}" stroke-linejoin="round"${da ? ` stroke-dasharray="${da}"` : ''}${ms}${me}/></g>`;
+    return `<g data-id="${esc(el.id)}" opacity="${n((el.opacity ?? 1) * st.o)}"${tr}><path d="${d}" fill="none" stroke="transparent" stroke-width="${n(Math.max(ctx.hit || 16, el.strokeWidth + 12))}"/><path d="${d}" fill="none" stroke="${color}" stroke-width="${n(el.strokeWidth)}" stroke-linecap="${el.dash === 'dotted' ? 'round' : 'butt'}" stroke-linejoin="round"${da ? ` stroke-dasharray="${da}"` : ''}${ms}${me}/></g>`;
   }
 
   function imageInner(el, ctx) {
     const url = ctx.asset(el.asset);
     const c = el.crop || { x: 0, y: 0, w: 1, h: 1 };
     const nw = el.nw || 1000, nh = el.nh || 1000;
-    const fid = ctx.idp + 'if' + el.id;
+    const fid = did(ctx, 'if', el.id);
     const f = R.imageFilter(el.adj, fid, el.duo, nw / 1000);
     if (f) ctx.defs.push(f);
-    let inner = `<svg width="${n(el.w)}" height="${n(el.h)}" viewBox="${n(c.x * nw)} ${n(c.y * nh)} ${n(c.w * nw)} ${n(c.h * nh)}" preserveAspectRatio="none"><image href="${esc(url)}" xlink:href="${esc(url)}" width="${nw}" height="${nh}" preserveAspectRatio="none"${f ? ` filter="url(#${fid})"` : ''}/></svg>`;
+    let inner = `<svg width="${n(el.w)}" height="${n(el.h)}" viewBox="${n(c.x * nw)} ${n(c.y * nh)} ${n(c.w * nw)} ${n(c.h * nh)}" preserveAspectRatio="none"><image href="${esc(url)}" xlink:href="${esc(url)}" width="${n(nw)}" height="${n(nh)}" preserveAspectRatio="none"${f ? ` filter="url(#${fid})"` : ''}/></svg>`;
     if (!url) inner = `<rect width="${n(el.w)}" height="${n(el.h)}" fill="#e5e5ea"/>`;
     inner += vignette(el, ctx, el.w, el.h);
     if (el.radius) {
-      const cid = ctx.idp + 'ic' + el.id;
+      const cid = did(ctx, 'ic', el.id);
       ctx.defs.push(`<clipPath id="${cid}"><path d="${rrect(el.w, el.h, el.radius)}"/></clipPath>`);
       inner = `<g clip-path="url(#${cid})">${inner}</g>`;
     }
@@ -465,25 +498,25 @@
   function vignette(el, ctx, w, h) {
     const v = el.adj && el.adj.vignette;
     if (!v) return '';
-    const gid = ctx.idp + 'vg' + el.id;
+    const gid = did(ctx, 'vg', el.id);
     ctx.defs.push(`<radialGradient id="${gid}" r="0.75"><stop offset="0.45" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="${n(v / 100)}"/></radialGradient>`);
     return `<rect width="${n(w)}" height="${n(h)}" fill="url(#${gid})"/>`;
   }
 
   function shapeInner(el, ctx, st) {
     const d = R.shapePath(el.shape, el.w, el.h, el.radius || 0);
+    const da = dashArray(el.dash, el.strokeWidth);
     let out = '';
     if (el.asset) {
       // Frame: image clipped to the shape.
-      const cid = ctx.idp + 'fc' + el.id, fid = ctx.idp + 'ff' + el.id;
+      const cid = did(ctx, 'fc', el.id), fid = did(ctx, 'ff', el.id);
       ctx.defs.push(`<clipPath id="${cid}"><path d="${d}"/></clipPath>`);
       const f = R.imageFilter(el.adj, fid, el.duo);
       if (f) ctx.defs.push(f);
       const url = ctx.asset(el.asset);
       out += `<g clip-path="url(#${cid})"><rect width="${n(el.w)}" height="${n(el.h)}" fill="#ddd"/>${url ? `<image href="${esc(url)}" xlink:href="${esc(url)}" width="${n(el.w)}" height="${n(el.h)}" preserveAspectRatio="xMidYMid slice"${f ? ` filter="url(#${fid})"` : ''}/>` : ''}${vignette(el, ctx, el.w, el.h)}</g>`;
-      if (el.strokeWidth) out += `<path d="${d}" fill="none" stroke="${esc(el.stroke)}" stroke-width="${n(el.strokeWidth)}"/>`;
+      if (el.strokeWidth) out += `<path d="${d}" fill="none" stroke="${esc(el.stroke)}" stroke-width="${n(el.strokeWidth)}"${da ? ` stroke-dasharray="${da}" stroke-linecap="round"` : ''}/>`;
     } else {
-      const da = dashArray(el.dash, el.strokeWidth);
       out += `<path d="${d}" fill="${R.paint(el.fill, ctx, el.id)}" fill-rule="evenodd"${el.strokeWidth ? ` stroke="${esc(el.stroke)}" stroke-width="${n(el.strokeWidth)}"${da ? ` stroke-dasharray="${da}" stroke-linecap="round"` : ''}` : ''}/>`;
     }
     if (el.text && el.text.trim()) {
@@ -491,7 +524,7 @@
       out += R.textSVG(el, ctx, { x: px, y: py, w: el.w - px * 2, h: el.h - py * 2, valign: true }, st.chars);
     }
     if (el.sticky && el.votes) {
-      out += `<g transform="translate(${n(el.w - 56)} ${n(el.h - 40)})"><rect width="48" height="30" rx="15" fill="#ffffff" opacity="0.85"/><text x="24" y="21" font-size="16" font-family="${esc(M.fontStack('Inter'))}" text-anchor="middle" fill="#333">👍 ${el.votes}</text></g>`;
+      out += `<g transform="translate(${n(el.w - 56)} ${n(el.h - 40)})"><rect width="48" height="30" rx="15" fill="#ffffff" opacity="0.85"/><text x="24" y="21" font-size="16" font-family="${esc(M.fontStack('Inter'))}" text-anchor="middle" fill="#333">👍 ${esc(el.votes)}</text></g>`;
     }
     return out;
   }
@@ -500,25 +533,27 @@
     const { w, h } = el;
     const data = el.data || [];
     const cols = el.colors || ['#8c52ff'];
-    const fs = Math.max(10, Math.min(w, h) / 18);
+    const m = Math.min(w, h), fs = Math.min(Math.max(10, m / 18), Math.max(4, m / 6));
     const ff = esc(M.fontStack(el.font || 'Inter'));
     const tc = esc(el.textColor || '#333');
-    const max = Math.max(1, ...data.map((d) => +d.value || 0));
     let out = '';
     if (el.chart === 'pie' || el.chart === 'donut') {
       const total = data.reduce((s, d) => s + Math.max(0, +d.value || 0), 0) || 1;
       const legendW = w > h * 1.2 ? w * 0.35 : 0;
-      const r = Math.min(w - legendW, h) / 2 - 4, cx = (w - legendW) / 2, cy = h / 2;
+      const r = Math.max(0, Math.min(w - legendW, h) / 2 - 4), cx = (w - legendW) / 2, cy = h / 2;
+      // donut slices are ring segments, so the hole shows whatever is behind the chart
+      const ri = el.chart === 'donut' ? r * 0.55 : 0;
+      const at = (rr, a) => `${n(cx + rr * Math.cos(a))} ${n(cy + rr * Math.sin(a))}`;
       let a0 = -Math.PI / 2;
       data.forEach((d, i) => {
         const frac = Math.max(0, +d.value || 0) / total;
         const a1 = a0 + frac * Math.PI * 2;
-        const large = a1 - a0 > Math.PI ? 1 : 0;
-        const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0), x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
-        out += frac >= 0.9999 ? `<circle cx="${n(cx)}" cy="${n(cy)}" r="${n(r)}" fill="${esc(cols[i % cols.length])}"/>` : `<path d="M${n(cx)} ${n(cy)}L${n(x0)} ${n(y0)}A${n(r)} ${n(r)} 0 ${large} 1 ${n(x1)} ${n(y1)}Z" fill="${esc(cols[i % cols.length])}" stroke="#fff" stroke-width="2"/>`;
+        const large = a1 - a0 > Math.PI ? 1 : 0, col = esc(cols[i % cols.length]);
+        if (frac < 0.9999) out += `<path d="M${ri ? at(ri, a0) : `${n(cx)} ${n(cy)}`}L${at(r, a0)}A${n(r)} ${n(r)} 0 ${large} 1 ${at(r, a1)}${ri ? `L${at(ri, a1)}A${n(ri)} ${n(ri)} 0 ${large} 0 ${at(ri, a0)}` : ''}Z" fill="${col}" stroke="#fff" stroke-width="2"/>`;
+        else out += ri ? `<circle cx="${n(cx)}" cy="${n(cy)}" r="${n((r + ri) / 2)}" fill="none" stroke="${col}" stroke-width="${n(r - ri)}"/>` : `<circle cx="${n(cx)}" cy="${n(cy)}" r="${n(r)}" fill="${col}"/>`;
         a0 = a1;
       });
-      if (el.chart === 'donut') out += `<circle cx="${n(cx)}" cy="${n(cy)}" r="${n(r * 0.55)}" fill="${esc(el.holeColor || '#ffffff')}"/>`;
+      if (ri && el.holeColor) out += `<circle cx="${n(cx)}" cy="${n(cy)}" r="${n(ri)}" fill="${esc(el.holeColor)}"/>`;
       if (legendW)
         data.forEach((d, i) => {
           const y = h / 2 - (data.length * fs * 1.6) / 2 + i * fs * 1.6;
@@ -527,22 +562,28 @@
       return out;
     }
     const pl = fs * 2.6, pb = fs * 2, pt = fs, pr = fs;
-    const cw = w - pl - pr, ch = h - pt - pb;
+    const cw = Math.max(0, w - pl - pr), ch = Math.max(0, h - pt - pb);
+    // the value axis always includes 0; negative values go below it
+    const vals = data.map((d) => +d.value || 0);
+    const lo = Math.min(0, ...vals), hi = Math.max(lo < 0 ? 0 : 1, ...vals), span = hi - lo;
+    const vy = (v) => pt + ch - ((v - lo) / span) * ch, y0 = vy(0);
     for (let i = 0; i <= 4; i++) {
       const y = pt + ch - (ch * i) / 4;
-      out += `<line x1="${n(pl)}" x2="${n(w - pr)}" y1="${n(y)}" y2="${n(y)}" stroke="${tc}" stroke-opacity="0.15"/><text x="${n(pl - 6)}" y="${n(y + fs * 0.35)}" font-size="${n(fs * 0.85)}" text-anchor="end" font-family="${ff}" fill="${tc}">${U.round((max * i) / 4, 1)}</text>`;
+      out += `<line x1="${n(pl)}" x2="${n(w - pr)}" y1="${n(y)}" y2="${n(y)}" stroke="${tc}" stroke-opacity="0.15"/><text x="${n(pl - 6)}" y="${n(y + fs * 0.35)}" font-size="${n(fs * 0.85)}" text-anchor="end" font-family="${ff}" fill="${tc}">${U.round(lo + (span * i) / 4, 1)}</text>`;
     }
+    if (lo < 0) out += `<line x1="${n(pl)}" x2="${n(w - pr)}" y1="${n(y0)}" y2="${n(y0)}" stroke="${tc}" stroke-opacity="0.45"/>`;
     const step = cw / Math.max(1, data.length);
     if (el.chart === 'line' || el.chart === 'area') {
-      const pts = data.map((d, i) => [pl + step * (i + 0.5), pt + ch - ((+d.value || 0) / max) * ch]);
-      if (el.chart === 'area' && pts.length) out += `<path d="M${n(pts[0][0])} ${n(pt + ch)}${pts.map((p) => `L${n(p[0])} ${n(p[1])}`).join('')}L${n(pts[pts.length - 1][0])} ${n(pt + ch)}Z" fill="${esc(cols[0])}" opacity="0.25"/>`;
+      const pts = vals.map((v, i) => [pl + step * (i + 0.5), vy(v)]);
+      if (el.chart === 'area' && pts.length) out += `<path d="M${n(pts[0][0])} ${n(y0)}${pts.map((p) => `L${n(p[0])} ${n(p[1])}`).join('')}L${n(pts[pts.length - 1][0])} ${n(y0)}Z" fill="${esc(cols[0])}" opacity="0.25"/>`;
       out += `<polyline points="${pts.map((p) => n(p[0]) + ',' + n(p[1])).join(' ')}" fill="none" stroke="${esc(cols[0])}" stroke-width="${n(fs * 0.3)}" stroke-linejoin="round" stroke-linecap="round"/>`;
       pts.forEach((p) => (out += `<circle cx="${n(p[0])}" cy="${n(p[1])}" r="${n(fs * 0.35)}" fill="#fff" stroke="${esc(cols[0])}" stroke-width="${n(fs * 0.2)}"/>`));
     } else {
       data.forEach((d, i) => {
-        const bh = ((+d.value || 0) / max) * ch, bw = step * 0.62;
-        out += `<rect x="${n(pl + step * i + (step - bw) / 2)}" y="${n(pt + ch - bh)}" width="${n(bw)}" height="${n(Math.max(0, bh))}" rx="${n(Math.min(6, bw / 4))}" fill="${esc(cols[i % cols.length])}"/>`;
-        out += `<text x="${n(pl + step * (i + 0.5))}" y="${n(pt + ch - bh - fs * 0.35)}" font-size="${n(fs * 0.85)}" text-anchor="middle" font-family="${ff}" fill="${tc}">${esc(d.value)}</text>`;
+        const v = vals[i], y = vy(v), bw = step * 0.62;
+        out += `<rect x="${n(pl + step * i + (step - bw) / 2)}" y="${n(Math.min(y, y0))}" width="${n(bw)}" height="${n(Math.abs(y - y0))}" rx="${n(Math.min(6, bw / 4))}" fill="${esc(cols[i % cols.length])}"/>`;
+        // a negative bar's value sits just above the baseline, clear of the labels below the chart
+        out += `<text x="${n(pl + step * (i + 0.5))}" y="${n((v < 0 ? y0 : y) - fs * 0.35)}" font-size="${n(fs * 0.85)}" text-anchor="middle" font-family="${ff}" fill="${tc}">${esc(d.value)}</text>`;
       });
     }
     data.forEach((d, i) => (out += `<text x="${n(pl + step * (i + 0.5))}" y="${n(h - pb * 0.35)}" font-size="${n(fs)}" text-anchor="middle" font-family="${ff}" fill="${tc}">${esc(d.label)}</text>`));
@@ -554,12 +595,13 @@
     const cw = el.w / cols, rh = el.h / rows;
     const ff = esc(M.fontStack(el.font || 'Inter'));
     const fs = Math.min(el.size || 18, rh * 0.6);
+    const memo = new Map();
     let out = '';
     for (let r = 0; r < rows; r++)
       for (let c = 0; c < cols; c++) {
         const head = r === 0 && el.headerFill;
         out += `<rect x="${n(c * cw)}" y="${n(r * rh)}" width="${n(cw)}" height="${n(rh)}" fill="${esc(head ? el.headerFill : r % 2 && el.stripe ? el.stripe : el.fill || '#fff')}" stroke="${esc(el.stroke || '#ccc')}" stroke-width="1"/>`;
-        let v = R.evalCell(el.cells, r, c);
+        let v = R.evalCell(el.cells, r, c, memo);
         const maxCh = Math.max(1, Math.floor(cw / (fs * 0.55)));
         if (v.length > maxCh) v = v.slice(0, maxCh - 1) + '…';
         const numeric = v !== '' && !isNaN(+v);
@@ -598,11 +640,12 @@
       case 'icon': inner = `<g transform="scale(${n(el.w / 24)} ${n(el.h / 24)})"><path d="${M.ICONS[el.icon] || ''}" fill="${R.paint(el.fill, ctx, el.id)}"/></g>`; break;
       case 'emoji': inner = `<text x="${n(el.w / 2)}" y="${n(el.h * 0.86)}" font-size="${n(el.h * 0.92)}" text-anchor="middle" font-family="'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif">${esc(el.text)}</text>`; break;
     }
-    if (el.type !== 'text' && el.type !== 'draw') inner = `<rect width="${n(el.w)}" height="${n(el.h)}" fill="transparent"/>` + inner;
+    // the whole box takes the pointer (text too, beside short lines and between them)
+    if (el.type !== 'draw') inner = `<rect width="${n(el.w)}" height="${n(el.h)}" fill="transparent"/>` + inner;
     if (el.flipX || el.flipY) inner = `<g transform="translate(${el.flipX ? n(el.w) : 0} ${el.flipY ? n(el.h) : 0}) scale(${el.flipX ? -1 : 1} ${el.flipY ? -1 : 1})">${inner}</g>`;
     let filt = '';
     if (el.shadow) {
-      const fid = ctx.idp + 'sh' + el.id;
+      const fid = did(ctx, 'sh', el.id);
       const sz = Math.min(el.w, el.h);
       ctx.defs.push(`<filter id="${fid}" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="${n(sz * 0.03)}" stdDeviation="${n(sz * 0.04)}" flood-opacity="0.28"/></filter>`);
       filt = ` filter="url(#${fid})"`;
@@ -613,16 +656,17 @@
     if (st.s !== 1 || st.sx !== 1) tr += ` translate(${n(cx)} ${n(cy)}) scale(${n(st.s * st.sx)} ${n(st.s)}) translate(${n(-cx)} ${n(-cy)})`;
     const op = (el.opacity ?? 1) * st.o;
     const link = ctx.links && el.link && /^(https?:|mailto:|tel:|#)/i.test(el.link.trim()) ? el.link.trim() : '';
-    const g = `<g data-id="${el.id}" transform="${tr}"${op < 1 ? ` opacity="${n(op)}"` : ''}${filt}>${inner}</g>`;
-    return link ? `<a href="${esc(link)}" target="_blank">${g}</a>` : g;
+    const g = `<g data-id="${esc(el.id)}" transform="${tr}"${op < 1 ? ` opacity="${n(op)}"` : ''}${filt}>${inner}</g>`;
+    // '#3' links go to a page of the same document
+    return link ? `<a href="${esc(link)}"${link.startsWith('#') ? '' : ' target="_blank"'}>${g}</a>` : g;
   };
 
   R.backgroundSVG = (design, page, ctx) => {
-    const W = design.width, H = design.height, bg = page.bg || {};
+    const W = n(design.width), H = n(design.height), bg = page.bg || {};
     if (ctx.transparent) return '';
     let out = `<rect width="${W}" height="${H}" fill="${R.paint(bg.color || '#ffffff', ctx, 'bg' + page.id)}"/>`;
     if (bg.asset) {
-      const fid = ctx.idp + 'bgf' + page.id;
+      const fid = did(ctx, 'bgf', page.id);
       const f = R.imageFilter(bg.adj, fid);
       if (f) ctx.defs.push(f);
       out += `<image href="${esc(ctx.asset(bg.asset))}" xlink:href="${esc(ctx.asset(bg.asset))}" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"${f ? ` filter="url(#${fid})"` : ''}/>`;
@@ -632,17 +676,25 @@
   };
 
   let seq = 0;
-  // opts: { t, asset, idp, transparent, links, fontCSS, width, height, skip:Set }
+  // opts: { t, dur, asset, idp, transparent, links, fontCSS, width, height, skip:Set, hit }
+  // dur defaults to the page duration; null plays no exit animations (a slide that stays up until the presenter moves on).
+  // hit: minimum width of a line's invisible hit stroke, in page units (the editor keeps it a fixed size on screen).
   R.pageParts = (design, page, opts = {}) => {
-    const ctx = { asset: opts.asset || ((id) => A.S.assetURL(id)), idp: opts.idp || 'r' + (seq++).toString(36) + '_', t: opts.t, dur: page.duration || 5, page, defs: [], transparent: opts.transparent, links: opts.links };
+    const ctx = { asset: opts.asset || ((id) => A.S.assetURL(id)), idp: opts.idp || 'r' + (seq++).toString(36) + '_', t: opts.t, dur: opts.dur !== undefined ? opts.dur : page.duration || 5, page, defs: [], transparent: opts.transparent, links: opts.links, hit: opts.hit };
     const bg = R.backgroundSVG(design, page, ctx);
-    const els = page.elements.map((el, i) => (opts.skip && opts.skip.has(el.id) ? '' : R.elementSVG(el, ctx, i))).join('');
+    let vi = 0;
+    // skipped (edited) text is drawn by the editor's textarea; a shape still draws its body
+    const els = page.elements.map((el) => {
+      const i = el.hidden ? vi : vi++;
+      if (!opts.skip || !opts.skip.has(el.id)) return R.elementSVG(el, ctx, i);
+      return el.type === 'shape' ? R.elementSVG({ ...el, text: '' }, ctx, i) : '';
+    }).join('');
     return { defs: ctx.defs.join(''), bg, els };
   };
   R.pageSVG = (design, page, opts = {}) => {
     const p = R.pageParts(design, page, opts);
-    const W = design.width, H = design.height;
-    return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${opts.width || W}" height="${opts.height || Math.round(((opts.width || W) / W) * H)}" viewBox="0 0 ${W} ${H}">${opts.fontCSS ? `<style>${opts.fontCSS}</style>` : ''}<defs>${p.defs}</defs>${p.bg}${p.els}</svg>`;
+    const W = n(design.width), H = n(design.height);
+    return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${n(opts.width || W)}" height="${n(opts.height || Math.round(((opts.width || W) / W) * H))}" viewBox="0 0 ${W} ${H}">${opts.fontCSS ? `<style>${esc(opts.fontCSS)}</style>` : ''}<defs>${p.defs}</defs>${p.bg}${p.els}</svg>`;
   };
 
   // Self-contained SVG (assets inlined as data URLs, custom fonts embedded).
@@ -650,7 +702,8 @@
     const used = new Set();
     for (const p of design.pages) for (const e of p.elements) if (e.font) used.add(e.font);
     let css = '';
-    for (const f of M.customFonts) if (used.has(f.name)) css += `@font-face{font-family:"${f.name}";src:url(${await A.S.assetDataURL(f.asset)});}`;
+    // CSS-escaped here; pageSVG XML-escapes the whole style text (names like "Rock & Roll")
+    for (const f of M.customFonts) if (used.has(f.name)) css += `@font-face{font-family:"${f.name.replace(/[\\"]/g, '\\$&')}";src:url(${await A.S.assetDataURL(f.asset)});}`;
     return css;
   };
   R.standaloneSVG = async (design, page, opts = {}) => {
@@ -661,8 +714,10 @@
   };
   // Rasterise a page to a canvas.
   R.pageCanvas = async (design, page, scale = 1, opts = {}) => {
-    const svg = opts.svg || (await R.standaloneSVG(design, page, opts));
     const W = Math.max(1, Math.round(design.width * scale)), H = Math.max(1, Math.round(design.height * scale));
+    // the browser's canvas limits; past them drawing and toBlob fail without saying why
+    if (W * H > 268435456 || Math.max(W, H) > 32767) throw new Error('Export is too large – choose a smaller size');
+    const svg = opts.svg || (await R.standaloneSVG(design, page, opts));
     const blob = new Blob([svg], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(blob);
     try {

@@ -1,5 +1,5 @@
 // Offline cache for the web/PWA build. Bump VERSION when files change.
-const VERSION = 'atelier-v1.0.0';
+const VERSION = 'atelier-v1.0.1';
 const FILES = [
   './', 'index.html', 'manifest.webmanifest', 'css/styles.css', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png',
   'js/util.js', 'js/store.js', 'js/model.js', 'js/render.js', 'js/templates.js', 'js/export.js', 'js/imagetools.js', 'js/ai.js',

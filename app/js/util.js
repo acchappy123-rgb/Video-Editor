@@ -10,8 +10,12 @@ window.A = window.A || {};
   U.clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   U.clone = (o) => JSON.parse(JSON.stringify(o));
   U.round = (n, d = 2) => Math.round(n * 10 ** d) / 10 ** d;
+  // Also drops characters XML 1.0 forbids (a pasted \v or \f would make every exported SVG unparseable).
   U.esc = (s) =>
-    String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    String(s ?? '')
+      .replace(/[\v\f]/g, ' ')
+      .replace(/[\0-\x08\x0e-\x1f\p{Noncharacter_Code_Point}]/gu, '')
+      .replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   U.debounce = (fn, ms) => {
     let t;
     const d = (...a) => {
@@ -108,8 +112,12 @@ window.A = window.A || {};
       inp.onchange = () => res([...inp.files]);
       inp.click();
     });
-  U.canvasToBlob = (c, type = 'image/png', q = 0.92) => new Promise((res) => c.toBlob(res, type, q));
-  U.safeName = (s) => (s || 'design').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-') || 'design';
+  // toBlob yields null when the canvas is past the browser's size or memory limits
+  U.canvasToBlob = (c, type = 'image/png', q = 0.92) =>
+    new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error('Image is too large – choose a smaller size'))), type, q));
+  U.safeName = (s) => (s || 'design').replace(/[^\p{L}\p{M}\p{N}_\- ]+/gu, '').trim().replace(/\s+/g, '-') || 'design';
+  // Local calendar day as YYYY-MM-DD (toISOString would give the UTC day).
+  U.ymd = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
   // ---------- text measuring ----------
   const mc = document.createElement('canvas').getContext('2d');
@@ -141,28 +149,55 @@ window.A = window.A || {};
   };
 
   // ---------- toasts ----------
-  U.toast = (msg, kind = '') => {
+  // opts.action {label, onClick} adds a button; a sticky toast stays until its action or close button is clicked.
+  U.toast = (msg, kind = '', { action, sticky = false } = {}) => {
     let wrap = U.$('#toasts');
     if (!wrap) document.body.appendChild((wrap = U.h('div#toasts')));
     const t = U.h('div.toast.' + (kind || 'info'), msg);
+    const hide = () => {
+      t.classList.add('out');
+      setTimeout(() => t.remove(), 500);
+    };
+    if (action) t.append(' ', U.h('button.btn.sm.toast-action', { onclick: () => { hide(); action.onClick?.(); } }, action.label));
+    if (sticky) t.append(U.h('button.icon-btn.sm.toast-close', { title: 'Close', onclick: hide }, U.ic('x', 14)));
+    // the toast stack lets clicks through to the page; buttons need them
+    if (action || sticky) t.style.pointerEvents = 'auto';
     wrap.appendChild(t);
-    setTimeout(() => t.classList.add('out'), 2800);
-    setTimeout(() => t.remove(), 3300);
+    if (!sticky) {
+      setTimeout(() => t.classList.add('out'), 2800);
+      setTimeout(() => t.remove(), 3300);
+    }
+    return t;
   };
 
   // ---------- modal ----------
   U.modal = ({ title, body, actions = [], wide = false, onClose, cls = '' }) => {
     const back = U.h('div.modal-back');
+    const opener = document.activeElement;
+    let closed = false;
     const close = () => {
+      if (closed) return;
+      closed = true;
+      const hadFocus = back.contains(document.activeElement);
       back.remove();
       document.removeEventListener('keydown', onKey, true);
+      if (hadFocus && opener?.isConnected) opener.focus?.();
       onClose && onClose();
     };
+    // only the topmost dialog handles keys; Escape goes to an open menu first, Tab stays inside the dialog
     const onKey = (e) => {
-      if (e.key === 'Escape') {
+      if (!back.isConnected) return document.removeEventListener('keydown', onKey, true);
+      if (U.$$('.modal-back').pop() !== back) return;
+      if (e.key === 'Escape' && !openPop) {
         e.stopPropagation();
         close();
       }
+      if (e.key !== 'Tab') return;
+      const f = U.$$('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])', box).filter((x) => !x.disabled && x.getClientRects().length);
+      const i = f.indexOf(document.activeElement);
+      if (f.length && !(e.shiftKey ? i <= 0 : i < 0 || i === f.length - 1)) return;
+      e.preventDefault();
+      f[e.shiftKey ? f.length - 1 : 0]?.focus();
     };
     const box = U.h(
       'div.modal' + (wide ? '.wide' : '') + (cls ? '.' + cls : ''),
@@ -188,12 +223,15 @@ window.A = window.A || {};
         : null
     );
     back.appendChild(box);
+    back.close = close;
     back.addEventListener('mousedown', (e) => {
       if (e.target === back) close();
     });
     document.addEventListener('keydown', onKey, true);
     document.body.appendChild(back);
-    setTimeout(() => box.querySelector('input,textarea,select')?.focus(), 30);
+    // focus moves into the dialog (its first field, else the dialog itself) so Enter can't re-press the button behind it
+    box.tabIndex = -1;
+    (box.querySelector('input,textarea,select') || box).focus({ preventScroll: true });
     return { close, box };
   };
   U.prompt = (title, value = '', placeholder = '') =>
@@ -268,6 +306,17 @@ window.A = window.A || {};
     pop.style.left = x + 'px';
     pop.style.top = y + 'px';
     openPop = pop;
+    const onKey = (e) => {
+      if (!pop.isConnected) return document.removeEventListener('keydown', onKey, true);
+      if (e.key !== 'Escape') return;
+      // a dialog under the menu stays open
+      e.stopImmediatePropagation();
+      const inside = pop.contains(document.activeElement);
+      U.closePop();
+      document.removeEventListener('keydown', onKey, true);
+      if (inside) anchor.focus?.();
+    };
+    document.addEventListener('keydown', onKey, true);
     setTimeout(() => {
       const off = (e) => {
         if (!pop.isConnected) return document.removeEventListener('mousedown', off, true);

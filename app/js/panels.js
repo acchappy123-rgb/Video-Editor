@@ -48,13 +48,26 @@
       { label: 'Add as new page(s)', icon: 'addpage', onClick: () => insertTemplate(t, false) },
     ]);
   }
-  function insertTemplate(t, replace) {
+  // New ids for copied pages; connectors are re-pointed at the copies of their shapes.
+  const freshIds = (pages) => pages.forEach((p) => {
+    p.id = U.uid('p_');
+    const map = {};
+    p.elements.forEach((e) => (map[e.id] = e.id = U.uid('e_')));
+    p.elements.forEach((e) => {
+      if (e.c1) e.c1 = map[e.c1];
+      if (e.c2) e.c2 = map[e.c2];
+    });
+  });
+  async function insertTemplate(t, replace) {
     const td = t.design ? U.clone(t.design) : A.templateDesign(t);
     if (td.width !== E.d.width || td.height !== E.d.height) E.resizeDesign(td, E.d.width, E.d.height);
-    td.pages.forEach((p) => { p.id = U.uid('p_'); p.elements.forEach((e) => (e.id = U.uid('e_'))); });
-    if (replace) E.d.pages.splice(E.pi, 1, ...td.pages);
-    else E.d.pages.splice(E.pi + 1, 0, ...td.pages);
-    if (!replace) E.pi++;
+    freshIds(td.pages);
+    await S.ensureAssetURLs(S.designAssetIds(td));
+    if (replace) {
+      const gone = E.page().id;
+      E.d.pages.splice(E.pi, 1, ...td.pages);
+      E.d.comments = (E.d.comments || []).filter((c) => c.pageId !== gone);
+    } else E.d.pages.splice(++E.pi, 0, ...td.pages);
     E.sel = [];
     E.changed({ structure: true });
   }
@@ -179,7 +192,7 @@
       )
     );
     const b = A.app.brand?.fonts;
-    if (b && (b.heading || b.body)) body.append(section('Brand fonts', h('div.font-sets', [['heading', 'Heading'], ['subheading', 'Subheading'], ['body', 'Body']].filter(([k]) => b[k]).map(([k, n]) => h('button.font-set', { onclick: () => { E.addText(k); const el = E.selEls()[0]; el.font = b[k]; el.h = R.textHeight(el); E.changed(); } }, h('b', { style: { fontFamily: M.fontStack(b[k]) } }, n), h('span', b[k]))))));
+    if (b && (b.heading || b.body)) body.append(section('Brand fonts', h('div.font-sets', [['heading', 'Heading'], ['subheading', 'Subheading'], ['body', 'Body']].filter(([k]) => b[k]).map(([k, n]) => h('button.font-set', { onclick: () => E.addText(k) }, h('b', { style: { fontFamily: M.fontStack(b[k]) } }, n), h('span', b[k]))))));
     body.append(section('Font combinations', h('div.combo-grid', M.FONT_PAIRS.map(([hf, bf, name]) => h('button.combo', { onclick: () => addCombo(hf, bf, name) }, h('b', { style: { fontFamily: M.fontStack(hf) } }, name), h('span', { style: { fontFamily: M.fontStack(bf) } }, 'Pair with ' + bf))))));
     const styles = [
       ['Neon glow', { color: '#ff66c4', effect: { type: 'neon', intensity: 60 }, bold: true }, '#1a1033'],
@@ -238,7 +251,7 @@
     const body = h('div');
     const modeHint = { background: 'Click an image to set it as the page background.', replace: 'Click an image to replace the selected photo.', frame: 'Click an image to place it in the selected frame.', audio: 'Upload or pick audio to use as the soundtrack.' }[mode];
     if (modeHint) body.append(h('div.notice', modeHint, h('button.link', { onclick: () => EU.openPanel('uploads') }, 'Cancel')));
-    body.append(h('button.btn.primary.full', { onclick: () => upload() }, U.ic('upload', 16), ' Upload files'), h('p.muted.small', 'Images, SVG, audio, fonts (.ttf .otf .woff) and Atelier design files. Drag & drop onto the page also works.'));
+    body.append(h('button.btn.primary.full', { onclick: () => upload(mode) }, U.ic('upload', 16), ' Upload files'), h('p.muted.small', 'Images, SVG, audio, fonts (.ttf .otf .woff) and Atelier design files. Drag & drop onto the page also works.'));
     const tab = mode === 'audio' ? 'audio' : state.uploadsTab;
     body.append(tabs([['images', 'Images'], ['audio', 'Audio'], ['fonts', 'Fonts']], tab, (t) => { state.uploadsTab = t; EU.openPanel('uploads', mode === 'audio' && t !== 'audio' ? null : mode); }));
     const list = h('div');
@@ -265,9 +278,14 @@
     })();
     return { title: 'Uploads', body };
   };
-  async function upload() {
-    const files = await U.pickFiles('image/*,audio/*,.ttf,.otf,.woff,.woff2,.json,.svg');
-    for (const f of files) await A.app.importFile(f, { toEditor: true });
+  async function upload(mode) {
+    // background, replace and frame take one photo and use it like a clicked upload
+    const pick = mode && mode !== 'audio';
+    const files = await U.pickFiles(pick ? 'image/*,.svg' : 'image/*,audio/*,.ttf,.otf,.woff,.woff2,.json,.svg', !pick);
+    for (const f of files) {
+      const a = await A.app.importFile(f, { toEditor: !pick });
+      if (pick && a?.kind === 'image') useImage(a, mode);
+    }
     EU.renderPanel();
   }
   function useImage(a, mode) {
@@ -306,7 +324,7 @@
       for (const d of ds)
         list.append(h('button.proj-item', {
           onclick: async (e) => U.menu(e.currentTarget, [
-            { label: 'Add its pages here', icon: 'addpage', onClick: async () => { const c = U.clone(d); E.resizeDesign(c, E.d.width, E.d.height); c.pages.forEach((p) => { p.id = U.uid('p_'); p.elements.forEach((x) => (x.id = U.uid('e_'))); }); await S.ensureAssetURLs(S.designAssetIds(c)); E.d.pages.splice(E.pi + 1, 0, ...c.pages); E.pi++; E.changed({ structure: true }); } },
+            { label: 'Add its pages here', icon: 'addpage', onClick: async () => { const c = U.clone(d); E.resizeDesign(c, E.d.width, E.d.height); freshIds(c.pages); await S.ensureAssetURLs(S.designAssetIds(c)); E.d.pages.splice(E.pi + 1, 0, ...c.pages); E.pi++; E.changed({ structure: true }); } },
             { label: 'Open design', icon: 'fwd', onClick: () => A.app.go('#/design/' + d.id) },
           ]),
         }, h('img', { src: d.thumb || '', alt: '' }), h('span', d.title)));
@@ -428,11 +446,20 @@
       wout.append(h('p', t), h('button.btn.sm', { onclick: () => { const el = M.newText({ text: t, w: E.d.width * 0.6, size: Math.max(14, E.d.width / 36) }); el.h = R.textHeight(el); E.add(el); } }, 'Add to page'));
     }, writeBtn) }, 'Write');
     body.append(section('Write for me', wp, writeBtn, wout));
-    const st = sel1();
-    if (st && (st.type === 'text' || (st.type === 'shape' && st.text))) {
-      const opts = [['shorter', 'Shorter'], ['longer and more detailed', 'Longer'], ['more formal and professional', 'Formal'], ['more fun and playful', 'Fun'], ['free of spelling and grammar mistakes', 'Fix spelling']];
-      body.append(section('Rewrite selected text', h('div.chip-row', opts.map(([how, l]) => { const b = h('button.chip', { onclick: () => run(async () => { const t = await A.AI.rewrite(st.text, how); EU.apply((x) => x.id === st.id && (x.text = t)); }, b) }, l); return b; }))));
-    }
+    // rewrites the text selected at click time, even if the selection moves on while it runs
+    const rewrite = async (how) => {
+      const st = sel1(), pid = E.page().id;
+      if (!st || !(st.type === 'text' || (st.type === 'shape' && st.text))) return U.toast('Select a text box to rewrite it');
+      if (!E.canEdit()) return;
+      const t = await A.AI.rewrite(st.text, how);
+      const x = E.d?.pages.find((p) => p.id === pid)?.elements.find((e) => e.id === st.id);
+      if (!x) return;
+      x.text = t;
+      if (x.type === 'text') R.fitText(x);
+      E.changed({ all: true });
+    };
+    const opts = [['shorter', 'Shorter'], ['longer and more detailed', 'Longer'], ['more formal and professional', 'Formal'], ['more fun and playful', 'Fun'], ['free of spelling and grammar mistakes', 'Fix spelling']];
+    body.append(section('Rewrite selected text', h('div.chip-row', opts.map(([how, l]) => { const b = h('button.chip', { onclick: () => run(() => rewrite(how), b) }, l); return b; }))));
     // Design
     const dp = h('textarea.input', { rows: 3, placeholder: 'e.g. Bakery grand opening poster, warm colours' });
     const pages = h('select.input.sm', [1, 2, 3, 5].map((n) => h('option', { value: n }, n + ' page' + (n > 1 ? 's' : ''))));
@@ -538,8 +565,10 @@
       const list = h('div.layers');
       const items = [...E.els()].reverse();
       items.forEach((el) => {
+        const ctx = { asset: (id) => S.assetURL(id), idp: 'l' + el.id, defs: [], page: E.page() };
+        const inner = R.elementSVG(el, ctx);
         const row = h('div.layer' + (E.sel.includes(el.id) ? '.on' : ''), { draggable: 'true', onclick: (e) => E.select([el.id], e.shiftKey) },
-          h('span.layer-thumb', { html: `<svg viewBox="${Math.round(el.x)} ${Math.round(el.y)} ${Math.max(1, Math.round(el.w))} ${Math.max(1, Math.round(el.h))}" width="40" height="30">${R.elementSVG(el, { asset: (id) => S.assetURL(id), idp: 'l' + el.id, defs: [], page: E.page() })}</svg>` }),
+          h('span.layer-thumb', { html: `<svg viewBox="${Math.round(el.x)} ${Math.round(el.y)} ${Math.max(1, Math.round(el.w))} ${Math.max(1, Math.round(el.h))}" width="40" height="30"><defs>${ctx.defs.join('')}</defs>${inner}</svg>` }),
           h('span.layer-name', layerName(el)),
           h('button.icon-btn.sm', { title: el.hidden ? 'Show' : 'Hide', onclick: (e) => { e.stopPropagation(); el.hidden = !el.hidden; E.changed(); EU.renderPanel(); } }, U.ic(el.hidden ? 'eyeoff' : 'eye', 14)),
           h('button.icon-btn.sm', { title: el.locked ? 'Unlock' : 'Lock', onclick: (e) => { e.stopPropagation(); el.locked = !el.locked; E.changed(); EU.renderPanel(); } }, U.ic(el.locked ? 'lock' : 'unlock', 14))
@@ -574,7 +603,7 @@
     const set = (patch, fin = true) => EU.apply((x) => { x.effect = { ...(x.effect || {}), ...patch }; }, fin);
     const grid = h('div.fx-grid', M.EFFECTS.map(([id, name]) => {
       const sample = M.newText({ text: 'Ag', size: 60, w: 120, color: '#333', font: 'Impact', effect: { type: id } });
-      return h('button.fx-item' + (eff.type === id ? '.on' : ''), { onclick: () => { set({ type: id }); EU.renderPanel(); } }, h('span.fx-prev', { html: R.pageSVG({ width: 120, height: 90, pages: [] }, { elements: [{ ...sample, x: 10, y: 4, h: 80 }], bg: { color: '#f2f2f5' } }, { width: 120, idp: 'fx' + id }) }), h('span', name));
+      return h('button.fx-item' + (eff.type === id ? '.on' : ''), { onclick: () => { EU.apply((x) => { if (x.effect?.type !== id) x.effect = { type: id }; }); EU.renderPanel(); } }, h('span.fx-prev', { html: R.pageSVG({ width: 120, height: 90, pages: [] }, { elements: [{ ...sample, x: 10, y: 4, h: 80 }], bg: { color: '#f2f2f5' } }, { width: 120, idp: 'fx' + id }) }), h('span', name));
     }));
     const params = h('div');
     const sl = (label, key, def, min = 0, max = 100) => EU.slider(label, eff[key] ?? def, min, max, 1, (v, f) => set({ [key]: v }, f));
@@ -594,20 +623,23 @@
   // ---------- Animate ----------
   P.animate = (arg) => {
     const el = sel1();
-    const mode = state.animTab || (arg === 'page' || !el ? 'page' : 'element');
-    state.animTab = null;
+    // a picked tab holds while the selection stays the same
+    const key = E.sel.join();
+    const mode = (state.animTab?.key === key && state.animTab.tab) || (arg === 'page' || !el ? 'page' : 'element');
     const body = h('div');
-    if (el) body.append(tabs([['element', 'Element'], ['page', 'Page']], mode, (t) => { state.animTab = t; EU.renderPanel(); }));
+    if (el) body.append(tabs([['element', 'Element'], ['page', 'Page']], mode, (t) => { state.animTab = { tab: t, key }; EU.renderPanel(); }));
     const playBtn = h('button.btn.full', { onclick: () => A.Present.preview() }, U.ic('play', 16), ' Play preview');
     if (mode === 'element' && el) {
-      const a = el.anim || {};
+      const a = el.anim || {}, page = E.page();
+      // with no delay of its own, an element in a page animation waits for its layer's turn (as R.anim does)
+      const turn = (!a.in || a.in === 'none') && page.anim && page.anim !== 'none' ? Math.min(Math.max(0, E.els().filter((x) => !x.hidden).indexOf(el)) * 0.12, Math.max(0, (page.duration || 5) - 0.7 / (a.speed || 1) - 0.2)) : 0;
       const set = (patch) => { EU.apply((x) => (x.anim = { ...(x.anim || {}), ...patch })); EU.renderPanel(); };
       const grid = (list, key) => h('div.anim-grid', list.map(([id, name]) => h('button.anim-item' + ((a[key] || 'none') === id ? '.on' : ''), { onclick: () => { set({ [key]: id }); if (id !== 'none') A.Present.preview(); } }, name)));
       body.append(section('Enter', grid(M.ANIM_IN.filter(([id]) => id !== 'typewriter' || el.type === 'text' || el.text), 'in')));
       if (a.in && a.in !== 'none' && ['rise', 'pan', 'drift'].includes(a.in)) body.append(h('div.seg', ['up', 'down', 'left', 'right'].map((d) => h('button.seg-btn' + ((a.dir || 'up') === d ? '.on' : ''), { onclick: () => set({ dir: d }) }, d))));
       body.append(section('Emphasis (loops)', grid(M.ANIM_EMPH, 'emph')));
       body.append(section('Exit', grid(M.ANIM_OUT, 'out')));
-      body.append(section('Timing', EU.slider('Speed', a.speed || 1, 0.25, 3, 0.25, (v, f) => EU.apply((x) => (x.anim = { ...(x.anim || {}), speed: v }), f), (v) => v + '×'), EU.slider('Delay (s)', a.delay ?? 0, 0, 10, 0.1, (v, f) => EU.apply((x) => (x.anim = { ...(x.anim || {}), delay: v }), f))));
+      body.append(section('Timing', EU.slider('Speed', a.speed || 1, 0.25, 3, 0.25, (v, f) => EU.apply((x) => (x.anim = { ...(x.anim || {}), speed: v }), f), (v) => v + '×'), EU.slider('Delay (s)', a.delay ?? U.round(turn, 2), 0, 10, 0.1, (v, f) => EU.apply((x) => (x.anim = { ...(x.anim || {}), delay: v }), f))));
       body.append(section('Create an animation', h('p.muted.small', 'Record a motion path: click the button, then drag the element along the route.'), h('div.row', h('button.btn', { onclick: () => E.startMotion() }, U.ic('animate', 16), ' Record motion'), a.motion ? h('button.btn', { onclick: () => set({ motion: null }) }, 'Clear path') : null)));
     } else {
       const page = E.page();
@@ -651,15 +683,16 @@
         } }, h('span.app-ic', U.ic(icon, 20)), h('div', h('b', name), h('div.muted.small', desc)));
         return b;
       };
-      const replaceWith = async (blob, label) => {
+      // the same picture at another resolution keeps its crop; an expanded one is shown whole
+      const replaceWith = async (blob, label, reframe = false) => {
         if (!blob) return;
         const a = await S.addAsset(blob, { name: label, hidden: false });
         await S.ensureAssetURLs([a.id]);
         const ratio = a.h / a.w, oldRatio = (el.nh || a.h) / (el.nw || a.w);
         el.asset = a.id;
         if (el.type === 'image') {
-          el.nw = a.w; el.nh = a.h; el.crop = { x: 0, y: 0, w: 1, h: 1 };
-          if (Math.abs(ratio - oldRatio) > 0.01) el.h = el.w * ratio;
+          el.nw = a.w; el.nh = a.h;
+          if (reframe || Math.abs(ratio - oldRatio) > 0.01) { el.crop = { x: 0, y: 0, w: 1, h: 1 }; el.h = el.w * ratio; }
         }
         E.changed();
         EU.renderPanel();
@@ -669,7 +702,7 @@
       body.append(
         tool('wand', 'Background remover', 'Removes plain or studio backgrounds', async () => replaceWith(await A.I.removeBackground(await blob()), 'Background removed')),
         tool('eraser', 'Magic eraser', 'Brush over objects to remove them', async () => replaceWith(await A.I.eraserModal(await blob()), 'Edited photo')),
-        tool('fullscreen', 'Magic expand', 'Extend the photo beyond its edges', async () => replaceWith(await A.I.expand(await blob(), 0.2), 'Expanded photo')),
+        tool('fullscreen', 'Magic expand', 'Extend the photo beyond its edges', async () => replaceWith(await A.I.expand(await blob(), 0.2), 'Expanded photo', true)),
         tool('zoomin', 'Upscale 2×', 'Doubles the resolution with sharpening', async () => replaceWith(await A.I.upscale(await blob(), 2), 'Upscaled photo')),
         tool('upload', 'Replace photo', 'Pick another image', async () => EU.openPanel('uploads', el.type === 'image' ? 'replace' : 'frame')),
         ...(el.type === 'image' ? [tool('image', 'Set as background', 'Fill the page with this photo', async () => E.setBackgroundFromImage())] : [])
@@ -746,11 +779,14 @@
     const grid = h('div.tbl-edit', { style: { gridTemplateColumns: `24px repeat(${cols}, minmax(70px, 1fr))` } });
     grid.append(h('span'));
     for (let c = 0; c < cols; c++) grid.append(h('span.tbl-h', R.colName(c)));
+    const inputs = [];
     for (let r = 0; r < rows; r++) {
       grid.append(h('span.tbl-h', String(r + 1)));
       for (let c = 0; c < cols; c++) {
         const inp = h('input.tbl-cell', { value: el.cells[r][c], title: R.evalCell(el.cells, r, c) });
-        inp.addEventListener('change', () => { el.cells[r][c] = inp.value; E.changed(); EU.renderPanel(); });
+        // update in place: re-rendering the grid would drop the focus Tab is moving to the next cell
+        inp.addEventListener('change', () => { el.cells[r][c] = inp.value; E.changed({ toolbar: false }); inputs.forEach((x, k) => (x.title = R.evalCell(el.cells, Math.floor(k / cols), k % cols))); });
+        inputs.push(inp);
         grid.append(inp);
       }
     }

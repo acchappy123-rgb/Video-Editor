@@ -61,6 +61,18 @@
   };
 
   // ---------- PDF ----------
+  // Copy of canvas c with a b-px band around it that repeats its outermost pixels (edges and corners).
+  const bleedCanvas = (c, b) => {
+    const w = c.width, h = c.height, o = document.createElement('canvas');
+    o.width = w + 2 * b;
+    o.height = h + 2 * b;
+    const g = o.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    // [source start, source size, target start, target size] for: before the page, the page, after it
+    const xs = [[0, 1, 0, b], [0, w, b, w], [w - 1, 1, b + w, b]], ys = [[0, 1, 0, b], [0, h, b, h], [h - 1, 1, b + h, b]];
+    for (const [sx, sw, dx, dw] of xs) for (const [sy, sh, dy, dh] of ys) g.drawImage(c, sx, sy, sw, sh, dx, dy, dw, dh);
+    return o;
+  };
   X.pdf = async (design, pages, { scale = 2, quality = 0.92, bleed = false, marks = false, onProgress } = {}) => {
     const pt = 0.75; // 96 px per inch -> 72 pt per inch
     const B = bleed ? 9 : 0; // 1/8 inch bleed in pt
@@ -88,11 +100,13 @@
     obj(2, () => push(`<< /Type /Pages /Kids [${kids}] /Count ${N} >>`));
     for (let i = 0; i < N; i++) {
       onProgress && onProgress(i / N);
-      const c = await R.pageCanvas(design, pages[i], scale, { matte: '#ffffff' });
+      const c0 = await R.pageCanvas(design, pages[i], scale, { matte: '#ffffff' });
+      // Bleed: the page's edge pixels are extended outwards, so the trimmed artwork stays 1:1.
+      const kx = W / c0.width, ky = H / c0.height; // pt per px
+      const bp = Math.ceil(B / Math.min(kx, ky)), c = bp ? bleedCanvas(c0, bp) : c0;
       const jpg = new Uint8Array(await (await U.canvasToBlob(c, 'image/jpeg', quality)).arrayBuffer());
       const pid = 3 + i * 3, cid = pid + 1, iid = pid + 2;
-      // Bleed: stretch the artwork slightly past the trim edge.
-      const ix = MK, iy = MK, iw = W + 2 * B, ih = H + 2 * B;
+      const ix = MK + B - bp * kx, iy = MK + B - bp * ky, iw = c.width * kx, ih = c.height * ky;
       let content = `q ${iw.toFixed(2)} 0 0 ${ih.toFixed(2)} ${ix.toFixed(2)} ${iy.toFixed(2)} cm /Im${i} Do Q\n`;
       if (marks) {
         const t0x = MK + B, t0y = MK + B, t1x = t0x + W, t1y = t0y + H;
@@ -101,7 +115,8 @@
         for (const x of [t0x, t1x]) { seg(x, 0, x, MK - 3); seg(x, PH - MK + 3, x, PH); }
         for (const y of [t0y, t1y]) { seg(0, y, MK - 3, y); seg(PW - MK + 3, y, PW, y); }
       }
-      obj(pid, () => push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PW.toFixed(2)} ${PH.toFixed(2)}] /TrimBox [${(MK + B).toFixed(2)} ${(MK + B).toFixed(2)} ${(MK + B + W).toFixed(2)} ${(MK + B + H).toFixed(2)}] /Resources << /XObject << /Im${i} ${iid} 0 R >> >> /Contents ${cid} 0 R >>`));
+      const bleedBox = B ? ` /BleedBox [${MK.toFixed(2)} ${MK.toFixed(2)} ${(PW - MK).toFixed(2)} ${(PH - MK).toFixed(2)}]` : '';
+      obj(pid, () => push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PW.toFixed(2)} ${PH.toFixed(2)}]${bleedBox} /TrimBox [${(MK + B).toFixed(2)} ${(MK + B).toFixed(2)} ${(MK + B + W).toFixed(2)} ${(MK + B + H).toFixed(2)}] /Resources << /XObject << /Im${i} ${iid} 0 R >> >> /Contents ${cid} 0 R >>`));
       obj(cid, () => push(`<< /Length ${enc.encode(content).length} >>\nstream\n${content}endstream`));
       obj(iid, () => {
         push(`<< /Type /XObject /Subtype /Image /Width ${c.width} /Height ${c.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpg.length} >>\nstream\n`);
@@ -165,37 +180,48 @@
     }
     out.push(0);
   }
-  X.gif = (frames, w, h, delayCs = 10) => {
-    // frames: ImageData[]
-    const out = [];
+  // Streaming encoder: each frame is quantised and compressed as it is added, so frames need not be kept.
+  X.gifEncoder = (w, h, delayCs = 10) => {
+    const parts = [];
+    let out = [];
     const str = (s) => { for (const c of s) out.push(c.charCodeAt(0)); };
     const u16 = (v) => out.push(v & 255, (v >> 8) & 255);
+    const flush = () => { parts.push(new Uint8Array(out)); out = []; };
     str('GIF89a'); u16(w); u16(h); out.push(0xf7, 0, 0);
     for (let i = 0; i < 256; i++) {
       if (i < 216) out.push(Math.floor(i / 36) * 51, (Math.floor(i / 6) % 6) * 51, (i % 6) * 51);
       else out.push(0, 0, 0);
     }
     out.push(0x21, 0xff, 0x0b); str('NETSCAPE2.0'); out.push(3, 1, 0, 0, 0);
-    for (const f of frames) {
-      out.push(0x21, 0xf9, 4, 0x04); u16(delayCs); out.push(0, 0);
-      out.push(0x2c); u16(0); u16(0); u16(w); u16(h); out.push(0);
-      const px = f.data, idx = new Uint8Array(w * h);
-      // ordered dithering keeps gradients smooth with only 216 colours
-      const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
-      for (let y = 0, p = 0; y < h; y++)
-        for (let x = 0; x < w; x++, p++) {
-          const d = (bayer[(y & 3) * 4 + (x & 3)] / 16 - 0.5) * 51;
-          const q = (v) => Math.max(0, Math.min(5, Math.round((v + d) / 51)));
-          idx[p] = q(px[p * 4]) * 36 + q(px[p * 4 + 1]) * 6 + q(px[p * 4 + 2]);
-        }
-      gifLZW(idx, out);
-    }
-    out.push(0x3b);
-    return new Blob([new Uint8Array(out)], { type: 'image/gif' });
+    flush();
+    // ordered dithering keeps gradients smooth with only 216 colours
+    const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+    return {
+      add(f) {
+        out.push(0x21, 0xf9, 4, 0x04); u16(delayCs); out.push(0, 0);
+        out.push(0x2c); u16(0); u16(0); u16(w); u16(h); out.push(0);
+        const px = f.data, idx = new Uint8Array(w * h);
+        for (let y = 0, p = 0; y < h; y++)
+          for (let x = 0; x < w; x++, p++) {
+            const d = (bayer[(y & 3) * 4 + (x & 3)] / 16 - 0.5) * 51;
+            const q = (v) => Math.max(0, Math.min(5, Math.round((v + d) / 51)));
+            idx[p] = q(px[p * 4]) * 36 + q(px[p * 4 + 1]) * 6 + q(px[p * 4 + 2]);
+          }
+        gifLZW(idx, out);
+        flush();
+      },
+      finish: () => new Blob([...parts, new Uint8Array([0x3b])], { type: 'image/gif' }),
+    };
+  };
+  X.gif = (frames, w, h, delayCs = 10) => {
+    // frames: ImageData[]
+    const g = X.gifEncoder(w, h, delayCs);
+    for (const f of frames) g.add(f);
+    return g.finish();
   };
 
   // ---------- animation frames ----------
-  X.totalDuration = (pages) => pages.reduce((s, p) => s + (p.duration || 5), 0);
+  X.totalDuration = (pages) => U.round(pages.reduce((s, p) => s + (p.duration || 5), 0));
   X.frameAt = (pages, t) => {
     let acc = 0;
     for (let i = 0; i < pages.length; i++) {
@@ -212,38 +238,40 @@
   }
   X.renderFrame = async (design, pages, t, canvas, scale, map, fontCSS) => {
     const { index, local } = X.frameAt(pages, t);
-    const page = pages[index];
-    const svg = R.pageSVG(design, page, { t: local, asset: (id) => map[id] || '', fontCSS, idp: 'v' });
-    await R.pageCanvas(design, page, scale, { svg, canvas, matte: '#ffffff' });
+    const page = pages[index], next = pages[index + 1];
+    const raster = (p, t, idp) => R.pageCanvas(design, p, scale, { svg: R.pageSVG(design, p, { t, asset: (id) => map[id] || '', fontCSS, idp }), matte: '#ffffff' });
+    const c1 = await raster(page, local, 'v');
     // dissolve transition into the next page
-    const next = pages[index + 1];
-    if (next && next.transition && next.transition !== 'none') {
-      const d = page.duration || 5, td = 0.6;
-      if (local > d - td) {
-        const k = (local - (d - td)) / td;
-        const svg2 = R.pageSVG(design, next, { t: 0, asset: (id) => map[id] || '', fontCSS, idp: 'w' });
-        const c2 = await R.pageCanvas(design, next, scale, { svg: svg2, matte: '#ffffff' });
-        const g = canvas.getContext('2d');
-        g.globalAlpha = k;
-        g.drawImage(c2, 0, 0);
-        g.globalAlpha = 1;
-      }
+    const d = page.duration || 5, td = 0.6;
+    const k = next && next.transition && next.transition !== 'none' && local > d - td ? (local - (d - td)) / td : 0;
+    const c2 = k && (await raster(next, 0, 'w'));
+    // compose synchronously: a recorded canvas must never be captured half-drawn
+    if (canvas.width !== c1.width) canvas.width = c1.width;
+    if (canvas.height !== c1.height) canvas.height = c1.height;
+    const g = canvas.getContext('2d');
+    g.drawImage(c1, 0, 0);
+    if (c2) {
+      g.globalAlpha = k;
+      g.drawImage(c2, 0, 0);
+      g.globalAlpha = 1;
     }
   };
-  X.gifFromDesign = async (design, pages, { maxW = 640, fps = 10, onProgress } = {}) => {
+  X.gifFromDesign = async (design, pages, { maxW = 640, fps = 10, maxFrames = 600, onProgress } = {}) => {
     const scale = Math.min(1, maxW / design.width);
     const w = Math.round(design.width * scale), h = Math.round(design.height * scale);
     const map = await assetMap(design), fontCSS = await R.fontCSSFor(design);
-    const total = Math.min(60, X.totalDuration(pages));
-    const frames = [];
+    // a long design keeps every page: the frame rate drops so that it fits in maxFrames
+    const total = X.totalDuration(pages);
+    const delay = Math.max(Math.round(100 / fps), Math.ceil((total * 100) / maxFrames)); // centiseconds
+    const count = Math.max(1, Math.round((total * 100) / delay));
+    const gif = X.gifEncoder(w, h, delay);
     const canvas = document.createElement('canvas');
-    const count = Math.max(1, Math.round(total * fps));
     for (let i = 0; i < count; i++) {
-      await X.renderFrame(design, pages, i / fps, canvas, scale, map, fontCSS);
-      frames.push(canvas.getContext('2d').getImageData(0, 0, w, h));
+      await X.renderFrame(design, pages, (i * delay) / 100, canvas, scale, map, fontCSS);
+      gif.add(canvas.getContext('2d').getImageData(0, 0, w, h));
       onProgress && onProgress(i / count);
     }
-    return X.gif(frames, w, h, Math.round(100 / fps));
+    return gif.finish();
   };
 
   // ---------- video (MediaRecorder; MP4 where supported, else WebM) ----------
@@ -296,7 +324,12 @@
   // ---------- PowerPoint (one full-bleed picture per slide) ----------
   X.pptx = async (design, pages, { scale = 2, onProgress } = {}) => {
     const EMU = 9525; // per px at 96 dpi
-    const cx = Math.round(design.width * EMU), cy = Math.round(design.height * EMU);
+    // The slide size must stay within ST_SlideSizeCoordinate: scale uniformly, then widen the
+    // side that is still too small (extreme aspect ratios) and centre the picture on it.
+    const LO = 914400, HI = 51206400, w = design.width * EMU, h = design.height * EMU;
+    const k = Math.min(Math.max(1, LO / Math.min(w, h)), HI / Math.max(w, h));
+    const pw = Math.round(w * k), ph = Math.round(h * k);
+    const cx = U.clamp(pw, LO, HI), cy = U.clamp(ph, LO, HI);
     const files = [];
     const ns = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"';
     const head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
@@ -333,7 +366,7 @@
       files.push({ name: `ppt/media/image${i + 1}.png`, data: png });
       files.push({
         name: `ppt/slides/slide${i + 1}.xml`,
-        data: head + `<p:sld ${ns}><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:pic><p:nvPicPr><p:cNvPr id="2" name="Slide ${i + 1}"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`,
+        data: head + `<p:sld ${ns}><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:pic><p:nvPicPr><p:cNvPr id="2" name="Slide ${i + 1}"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm><a:off x="${Math.round((cx - pw) / 2)}" y="${Math.round((cy - ph) / 2)}"/><a:ext cx="${pw}" cy="${ph}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`,
       });
       files.push({ name: `ppt/slides/_rels/slide${i + 1}.xml.rels`, data: rels([['rId1', 'slideLayout', '../slideLayouts/slideLayout1.xml'], ['rId2', 'image', `../media/image${i + 1}.png`]]) });
     }
@@ -344,7 +377,11 @@
   // ---------- Website (single self-contained HTML file) ----------
   X.website = async (design, pages) => {
     const sections = [];
-    for (const p of pages) sections.push(`<section>${await R.standaloneSVG(design, p, { links: true })}</section>`);
+    // ids are design page numbers, the targets of '#3'-style page links
+    for (const p of pages) {
+      const n = design.pages.findIndex((q) => q.id === p.id) + 1;
+      sections.push(`<section${n ? ` id="${n}"` : ''}>${await R.standaloneSVG(design, p, { links: true })}</section>`);
+    }
     const title = U.esc(design.title);
     return new Blob([`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>html,body{margin:0;background:#fff}section{display:block}section svg{display:block;width:100%;height:auto}</style></head><body>${sections.join('\n')}</body></html>`], { type: 'text/html' });
   };

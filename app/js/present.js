@@ -11,12 +11,14 @@
     if (!E.d) return;
     PR.previewing = true;
     A.EU.refreshTimeline();
-    const dur = E.page().duration || 5;
+    const d = E.d, page = (PR.page = E.page());
+    const dur = page.duration || 5;
     const t0 = performance.now();
     const loop = () => {
       if (!PR.previewing) return;
       const t = (performance.now() - t0) / 1000;
-      if (t > dur) return PR.stopPreview();
+      // showing another page (or design) ends the preview
+      if (t > dur || E.d !== d || E.page() !== page) return PR.stopPreview();
       E.previewT = t;
       E.renderPage(E.pi);
       PR.raf = requestAnimationFrame(loop);
@@ -29,9 +31,13 @@
     cancelAnimationFrame(PR.raf);
     E.previewT = null;
     if (E.d) {
+      // redraw the previewed page wherever it is now, and the current one (a strip layout rebuilt it mid-preview)
+      const i = E.d.pages.indexOf(PR.page);
+      if (i >= 0 && i !== E.pi) E.renderPage(i);
       E.renderPage(E.pi);
       A.EU.refreshTimeline();
     }
+    PR.page = null;
   };
 
   // ---------- present ----------
@@ -46,8 +52,9 @@
     if (opts.fromStart) idx = 0;
     let autoplay = opts.autoplay ?? d.type === 'video';
     let presenter = !!opts.presenter;
-    let t0 = performance.now();
-    let raf;
+    // t0 is the slide's animation clock, tAuto its autoplay countdown (toggling autoplay restarts only the countdown)
+    let t0 = performance.now(), tAuto = t0;
+    let raf, stopped = false;
     PR.active = true;
     const stage = h('div.pr-stage');
     const notes = h('div.pr-notes');
@@ -55,15 +62,15 @@
     const clock = h('div.pr-clock');
     const side = h('div.pr-side', h('div.pr-label', 'Next'), next, h('div.pr-label', 'Notes'), notes, clock);
     const counter = h('span.pr-count');
-    const autoBtn = h('button.pr-btn', { title: 'Autoplay', onclick: () => { autoplay = !autoplay; t0 = performance.now(); autoBtn.classList.toggle('on', autoplay); } }, U.ic('play', 18), ' Autoplay');
+    const autoBtn = h('button.pr-btn', { title: 'Autoplay', onclick: () => { autoplay = !autoplay; tAuto = performance.now(); autoBtn.classList.toggle('on', autoplay); } }, U.ic('play', 18), h('span.pr-txt', ' Autoplay'));
     autoBtn.classList.toggle('on', autoplay);
-    const recBtn = h('button.pr-btn', { title: 'Record yourself presenting', onclick: () => (rec ? stopRec() : startRec()) }, U.ic('mic', 18), ' Record');
+    const recBtn = h('button.pr-btn', { title: 'Record yourself presenting', onclick: () => (rec ? stopRec() : startRec()) }, U.ic('mic', 18), h('span.pr-txt', ' Record'));
     const bar = h('div.pr-bar',
       h('button.pr-btn', { title: 'Previous (←)', onclick: () => go(idx - 1) }, U.ic('back', 18)),
       counter,
       h('button.pr-btn', { title: 'Next (→)', onclick: () => go(idx + 1) }, U.ic('fwd', 18)),
       autoBtn,
-      h('button.pr-btn', { title: 'Presenter view (P)', onclick: () => { presenter = !presenter; root.classList.toggle('presenter', presenter); } }, U.ic('present', 18), ' Presenter view'),
+      h('button.pr-btn.pr-pv', { title: 'Presenter view (P)', onclick: () => { presenter = !presenter; root.classList.toggle('presenter', presenter); } }, U.ic('present', 18), h('span.pr-txt', ' Presenter view')),
       recBtn,
       h('button.pr-btn', { title: 'Full screen (F)', onclick: () => toggleFS() }, U.ic('fullscreen', 18)),
       h('button.pr-btn', { title: 'Exit (Esc)', onclick: () => stop() }, U.ic('x', 18))
@@ -72,10 +79,13 @@
     document.body.appendChild(root);
     const started = Date.now();
     let audio = null;
-    if (d.audio) {
+    // a soundtrack uploaded in this session has no object URL yet
+    if (d.audio) S.ensureAssetURLs([d.audio]).catch(() => {}).then(() => {
+      if (stopped) return;
       try { audio = new Audio(S.assetURL(d.audio)); audio.loop = true; audio.play().catch(() => {}); } catch (e) {}
-    }
-    const toggleFS = () => (document.fullscreenElement ? document.exitFullscreen() : root.requestFullscreen?.().catch(() => {}));
+    });
+    // an editor that is already full screen hands it over to the presentation and gets it back on exit
+    const toggleFS = () => (document.fullscreenElement === root ? document.exitFullscreen() : root.requestFullscreen?.())?.catch(() => {});
     if (opts.fullscreen !== false && !presenter) toggleFS();
 
     let layer = null;
@@ -89,7 +99,7 @@
       stage.appendChild(nl);
       layer = nl;
       if (old) setTimeout(() => old.remove(), tr ? 650 : 0);
-      t0 = performance.now();
+      t0 = tAuto = performance.now();
       counter.textContent = `${idx + 1} / ${pages.length}`;
       notes.textContent = page.notes || 'No notes for this page.';
       next.innerHTML = pages[idx + 1] ? R.pageSVG(d, pages[idx + 1], { width: 320, idp: 'prn_' }) : '<div class="pr-end">End of presentation</div>';
@@ -104,25 +114,41 @@
       idx = i;
       mount(dir);
     };
+    // a touch on hidden controls only brings them back; touch swipes go forward and back
+    let reveal = false, sx = 0, sy = 0;
     stage.addEventListener('click', (e) => {
+      if (reveal) return;
       const a = e.target.closest('a');
       if (a) {
         const href = a.getAttribute('href') || '';
         const m = href.match(/^#(\d+)$/);
-        if (m) { e.preventDefault(); go(+m[1] - 1); }
+        // '#N' is the design's page N, hidden pages included
+        if (m) { e.preventDefault(); const j = pages.indexOf(d.pages[+m[1] - 1]); if (j >= 0) go(j); }
         return;
       }
       go(idx + 1);
     });
+    stage.addEventListener('pointerup', (e) => {
+      const dx = e.clientX - sx, dy = e.clientY - sy;
+      if (e.pointerType !== 'mouse' && Math.abs(dx) > 50 && Math.abs(dx) > 2 * Math.abs(dy)) go(idx + (dx < 0 ? 1 : -1));
+    });
+    // animated slides are re-rendered every frame, which would replace the node under a press and lose its click
+    let held = false;
+    stage.addEventListener('pointerdown', () => (held = true));
+    const release = () => (held = false);
+    addEventListener('pointerup', release, true);
+    addEventListener('pointercancel', release, true);
     const loop = () => {
-      const t = (performance.now() - t0) / 1000;
-      const page = pages[idx];
-      if (layer && animated(page)) layer.innerHTML = svgFor(page, t, 'pr' + idx + '_');
-      clock.textContent = '⏱ ' + fmtTime((Date.now() - started) / 1000);
-      if (autoplay && t >= (page.duration || 5)) go(idx + 1 < pages.length ? idx + 1 : (d.type === 'video' ? pages.length : 0));
+      // scheduled first, so a stop() during this frame cancels it
       raf = requestAnimationFrame(loop);
+      const now = performance.now(), page = pages[idx];
+      if (layer && animated(page) && !held) layer.innerHTML = svgFor(page, (now - t0) / 1000, 'pr' + idx + '_');
+      clock.textContent = '⏱ ' + fmtTime((Date.now() - started) / 1000);
+      if (autoplay && (now - tAuto) / 1000 >= (page.duration || 5)) go(idx + 1 < pages.length ? idx + 1 : (d.type === 'video' ? pages.length : 0));
     };
     const onKey = (e) => {
+      // leave browser and system shortcuts (Ctrl/Cmd+P, Cmd+F…) alone
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (['ArrowRight', 'ArrowDown', ' ', 'PageDown', 'Enter'].includes(e.key)) { e.preventDefault(); go(idx + 1); }
       else if (['ArrowLeft', 'ArrowUp', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); go(idx - 1); }
       else if (e.key === 'Escape') { if (!document.fullscreenElement) stop(); }
@@ -135,6 +161,12 @@
     let idleT;
     const onMove = () => { root.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => root.classList.add('idle'), 2500); };
     root.addEventListener('pointermove', onMove);
+    root.addEventListener('pointerdown', (e) => {
+      reveal = e.pointerType !== 'mouse' && root.classList.contains('idle');
+      sx = e.clientX;
+      sy = e.clientY;
+      onMove();
+    }, true);
     onMove();
     mount(1);
     loop();
@@ -208,12 +240,18 @@
     }
 
     function stop() {
+      if (stopped) return;
+      stopped = true;
       if (rec) stopRec();
       cancelAnimationFrame(raf);
+      clearTimeout(idleT);
       document.removeEventListener('keydown', onKey, true);
+      removeEventListener('pointerup', release, true);
+      removeEventListener('pointercancel', release, true);
       audio && audio.pause();
-      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-      root.remove();
+      // leaving full screen before the root goes hands it back to an editor that was full screen (removal exits fully)
+      if (document.fullscreenElement === root) document.exitFullscreen().catch(() => {}).then(() => root.remove());
+      else root.remove();
       PR.active = false;
       const real = d.pages.indexOf(pages[idx]);
       if (real >= 0 && E.d === d) E.setPage(real);

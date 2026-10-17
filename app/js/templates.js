@@ -221,7 +221,7 @@
     d.pages = tpl.pages();
     return d;
   };
-  // Cached preview designs for thumbnails
+  // Cached preview designs for thumbnails (a user template carries its design instead of pages())
   const cache = {};
-  A.templatePreview = (tpl) => cache[tpl.id] || (cache[tpl.id] = A.R.previewURL(A.templateDesign(tpl)));
+  A.templatePreview = (tpl) => cache[tpl.id] || (cache[tpl.id] = A.R.previewURL(tpl.design || A.templateDesign(tpl)));
 })(window.A);

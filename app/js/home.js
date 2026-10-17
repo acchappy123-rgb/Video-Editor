@@ -30,7 +30,7 @@
       bell,
       h('button.icon-btn', { title: 'Help & shortcuts', onclick: () => H.shortcuts() }, U.ic('help')),
       h('button.avatar-btn', { title: 'Account', onclick: (e) => U.menu(e.currentTarget, [
-        { header: name + ' · stored on this device' },
+        { header: (A.app.profile?.name || 'You') + ' · stored on this device' },
         { label: 'Settings', icon: 'settings', onClick: () => H.settings() },
         { label: 'Brand Kit', icon: 'brand', onClick: () => A.app.go('#/brand') },
         { label: 'Back up all data', icon: 'download', onClick: () => backup() },
@@ -89,10 +89,11 @@
       } }],
     });
   }
-  async function importFiles() {
+  // Callers that redraw their own view pass reroute: false (re-routing resets e.g. the Projects tab).
+  async function importFiles({ reroute = true } = {}) {
     const files = await U.pickFiles('.json,image/*,audio/*,.ttf,.otf,.woff,.woff2,.svg');
     for (const f of files) await A.app.importFile(f);
-    if (A.app.view === 'home') A.app.route();
+    if (reroute && A.app.view === 'home') A.app.route();
   }
 
   // ---------- design cards ----------
@@ -101,7 +102,7 @@
     const img = h('div.card-thumb', d.thumb ? h('img', { src: d.thumb, alt: '', loading: 'lazy' }) : h('span.muted', 'No preview'));
     const star = h('button.icon-btn.sm.star' + (d.starred ? '.on' : ''), { title: d.starred ? 'Unstar' : 'Star', onclick: async (e) => { e.stopPropagation(); d.starred = !d.starred; await S.put('designs', d); onChange && onChange(); } }, U.ic(d.starred ? 'star2' : 'star', 16));
     const more = h('button.icon-btn.sm', { title: 'More', onclick: (e) => { e.stopPropagation(); cardMenu(e.currentTarget, d, onChange); } }, U.ic('more', 16));
-    return h('div.card', { onclick: () => A.app.go('#/design/' + d.id), tabindex: 0, onkeydown: (e) => e.key === 'Enter' && A.app.go('#/design/' + d.id) },
+    return h('div.card', { onclick: () => A.app.go('#/design/' + d.id), tabindex: 0, onkeydown: (e) => e.key === 'Enter' && e.target === e.currentTarget && A.app.go('#/design/' + d.id) },
       img, h('div.card-actions', star, more),
       h('div.card-info', h('b.card-title', d.title), h('span.muted.small', (t.id === 'custom' ? `${d.width}×${d.height}` : t.label) + ' · ' + U.timeAgo(d.updatedAt))));
   }
@@ -123,7 +124,7 @@
 
   // ---------- Home ----------
   H.home = async () => {
-    const designs = await S.listDesigns();
+    let designs = await S.listDesigns();
     const scope = { v: 'all' };
     const input = h('input.hero-input', { placeholder: 'What will you design today?', 'aria-label': 'Search' });
     const results = h('div.hero-results');
@@ -153,7 +154,8 @@
     );
     const recent = h('div.card-grid');
     const renderRecent = async () => {
-      const ds = await S.listDesigns();
+      const ds = (designs = await S.listDesigns());
+      runSearch();
       recent.innerHTML = '';
       if (!ds.length) recent.append(h('div.empty', h('p', 'Your designs will show up here.'), h('button.btn.primary', { onclick: () => H.newDesign({ type: 'social', w: 1080, h: 1080, title: 'My first design' }) }, 'Start your first design')));
       ds.slice(0, 12).forEach((d) => recent.append(designCard(d, renderRecent)));
@@ -175,6 +177,10 @@
     d.id = U.uid('d_');
     d.createdAt = Date.now();
     d.title = t.name;
+    // a user template is a copy of a design: the new one starts unstarred and outside any folder
+    d.starred = false;
+    d.folderId = null;
+    delete d.deletedAt;
     await S.saveDesign(d);
     A.app.go('#/design/' + d.id);
   }
@@ -202,15 +208,15 @@
       if (state.tab === 'uploads') {
         const assets = await S.listAssets();
         await S.ensureAssetURLs(assets.filter((a) => a.kind === 'image').map((a) => a.id));
-        main.append(h('div.row', h('button.btn.primary', { onclick: async () => { await importFiles(); render(); } }, U.ic('upload', 16), ' Upload')));
+        main.append(h('div.row', h('button.btn.primary', { onclick: async () => { await importFiles({ reroute: false }); render(); } }, U.ic('upload', 16), ' Upload')));
         const grid = h('div.upload-grid');
         if (!assets.length) grid.append(h('p.muted', 'No uploads yet.'));
-        assets.forEach((a) => grid.append(h('div.upload-card', a.kind === 'image' ? h('img', { src: S.assetURL(a.id), alt: a.name }) : h('div.file-ic', U.ic(a.kind === 'audio' ? 'music' : a.kind === 'font' ? 'text' : 'file', 32)), h('span.small', a.name), h('button.icon-btn.sm', { title: 'Delete', onclick: async () => { if (await U.confirm('Delete this upload? Designs using it will show a blank placeholder.', 'Delete', true)) { await S.del('assets', a.id); render(); } } }, U.ic('trash', 14)))));
+        assets.forEach((a) => grid.append(h('div.upload-card', a.kind === 'image' ? h('img', { src: S.assetURL(a.id), alt: a.name }) : h('div.file-ic', U.ic(a.kind === 'audio' ? 'music' : a.kind === 'font' ? 'text' : 'file', 32)), h('span.small', a.name), h('button.icon-btn.sm', { title: 'Delete', onclick: async () => { if (await U.confirm('Delete this upload? Designs using it will show a blank placeholder.', 'Delete', true)) { await S.del('assets', a.id); await dropFromBrand(a.id); render(); } } }, U.ic('trash', 14)))));
         main.append(grid);
         return;
       }
       if (state.tab === 'shared') {
-        main.append(h('div.empty', h('p', 'Designs that other people send you appear here after you import them.'), h('p.muted', 'Atelier has no accounts or cloud – collaborators share .atelier.json design files.'), h('button.btn.primary', { onclick: async () => { await importFiles(); state.tab = 'all'; render(); } }, 'Import a design file')));
+        main.append(h('div.empty', h('p', 'Designs that other people send you appear here after you import them.'), h('p.muted', 'Atelier has no accounts or cloud – collaborators share .atelier.json design files.'), h('button.btn.primary', { onclick: async () => { await importFiles({ reroute: false }); state.tab = 'all'; render(); } }, 'Import a design file')));
         return;
       }
       if (state.tab === 'folders' && !state.folder) {
@@ -239,7 +245,7 @@
       const grid = h('div.card-grid');
       if (state.tab === 'trash') {
         main.append(h('p.muted', 'Designs in the trash are deleted for good after 30 days.'));
-        if (ds.length) main.append(h('button.btn.sm.danger', { onclick: async () => { if (await U.confirm('Permanently delete everything in the trash?', 'Empty trash', true)) { for (const d of ds) await S.deleteForever(d.id); render(); } } }, 'Empty trash'));
+        if (ds.length) main.append(h('button.btn.sm.danger', { onclick: async () => { if (await U.confirm('Permanently delete everything in the trash?', 'Empty trash', true)) { for (const d of await S.listDesigns({ trash: true })) await S.deleteForever(d.id); render(); } } }, 'Empty trash'));
         ds.forEach((d) => grid.append(h('div.card.trash', h('div.card-thumb', d.thumb ? h('img', { src: d.thumb, alt: '' }) : null), h('div.card-info', h('b.card-title', d.title), h('span.muted.small', Math.max(0, 30 - Math.floor((Date.now() - d.deletedAt) / 86400000)) + ' days left')), h('div.row', h('button.btn.sm', { onclick: async () => { await S.restoreDesign(d.id); render(); } }, 'Restore'), h('button.btn.sm.danger', { onclick: async () => { if (await U.confirm('Delete forever? This cannot be undone.', 'Delete', true)) { await S.deleteForever(d.id); render(); } } }, 'Delete')))));
       } else ds.forEach((d) => grid.append(designCard(d, render)));
       if (!ds.length) grid.append(h('p.muted', state.tab === 'trash' ? 'The trash is empty.' : 'Nothing here yet.'));
@@ -268,13 +274,19 @@
   };
 
   // ---------- Brand ----------
+  async function dropFromBrand(id) {
+    const b = A.app.brand;
+    for (const k of ['logos', 'photos', 'icons']) b[k] = (b[k] || []).filter((x) => x !== id);
+    await A.app.saveBrand();
+  }
   H.brand = async () => {
     const b = A.app.brand;
     const main = h('div');
     const save = async () => { await A.app.saveBrand(); render(); };
     const imgList = async (key, label) => {
-      const ids = b[key] || [];
-      await S.ensureAssetURLs(ids);
+      await S.ensureAssetURLs(b[key] || []);
+      // ids of deleted uploads would show as broken tiles
+      const ids = (b[key] || []).filter((id) => S.assetURL(id));
       return h('div.brand-sec', h('h3', label), h('div.brand-imgs', ...ids.map((id) => h('div.brand-img', h('img', { src: S.assetURL(id), alt: '' }), h('button.icon-btn.sm', { title: 'Remove', onclick: () => { b[key] = ids.filter((x) => x !== id); save(); } }, U.ic('x', 12)))), h('button.add-tile', { onclick: async () => { const files = await U.pickFiles('image/*'); for (const f of files) { const a = await S.addAsset(f, { name: f.name, tag: 'brand' }); b[key] = [...(b[key] || []), a.id]; } save(); } }, U.ic('plus', 24))));
     };
     const render = async () => {
@@ -336,9 +348,10 @@
   };
 
   // ---------- Planner (content calendar) ----------
+  let plannerMonth = null; // the month on screen, kept when a post is saved or deleted
   H.planner = async (month) => {
     const now = new Date();
-    const cur = month || new Date(now.getFullYear(), now.getMonth(), 1);
+    const cur = (plannerMonth = month || new Date(now.getFullYear(), now.getMonth(), 1));
     const items = A.app.planner || [];
     const designs = await S.listDesigns();
     const first = new Date(cur.getFullYear(), cur.getMonth(), 1);
@@ -348,9 +361,9 @@
     for (let i = 0; i < 42; i++) {
       const day = new Date(start);
       day.setDate(start.getDate() + i);
-      const key = day.toISOString().slice(0, 10);
+      const key = U.ymd(day);
       const dayItems = items.filter((it) => it.date === key);
-      grid.append(h('div.cal-day' + (day.getMonth() !== cur.getMonth() ? '.other' : '') + (key === now.toISOString().slice(0, 10) ? '.today' : ''), { onclick: (e) => { if (e.target.closest('.cal-item')) return; H.schedule(null, key); } },
+      grid.append(h('div.cal-day' + (day.getMonth() !== cur.getMonth() ? '.other' : '') + (key === U.ymd(now) ? '.today' : ''), { onclick: (e) => { if (e.target.closest('.cal-item')) return; H.schedule(null, key); } },
         h('span.cal-num', String(day.getDate())),
         ...dayItems.map((it) => {
           const d = designs.find((x) => x.id === it.designId);
@@ -371,7 +384,7 @@
   }
   H.schedule = async (design, date, existing) => {
     const designs = await S.listDesigns();
-    const it = existing || { id: U.uid('s_'), designId: design?.id || designs[0]?.id || '', date: date || new Date().toISOString().slice(0, 10), time: '09:00', caption: '', channel: '' };
+    const it = existing || { id: U.uid('s_'), designId: design?.id || designs[0]?.id || '', date: date || U.ymd(), time: '09:00', caption: '', channel: '' };
     const dsel = h('select.input', h('option', { value: '' }, '— none —'), ...designs.map((d) => h('option', { value: d.id, selected: d.id === it.designId ? true : null }, d.title)));
     const di = h('input.input', { type: 'date', value: it.date });
     const ti = h('input.input', { type: 'time', value: it.time });
@@ -382,14 +395,16 @@
       title: existing ? 'Scheduled post' : 'Schedule a post',
       body: h('div', h('label.field', h('span', 'Design'), dsel), h('div.row', h('label.field', h('span', 'Date'), di), h('label.field', h('span', 'Time'), ti)), h('label.field', h('span', 'Channel'), ch), h('label.field', h('span', 'Caption'), cap)),
       actions: [
-        existing ? { label: 'Delete', danger: true, onClick: async () => { A.app.planner = A.app.planner.filter((x) => x.id !== it.id); await S.setKv('planner', A.app.planner); if (location.hash.startsWith('#/planner')) H.planner(); } } : null,
+        existing ? { label: 'Delete', danger: true, onClick: async () => { A.app.planner = A.app.planner.filter((x) => x.id !== it.id); await S.setKv('planner', A.app.planner); if (location.hash.startsWith('#/planner')) H.planner(plannerMonth); } } : null,
         { label: 'Cancel' },
         { label: 'Save', primary: true, onClick: async () => {
-          Object.assign(it, { designId: dsel.value, date: di.value, time: ti.value, caption: cap.value, channel: ch.value, notified: false });
+          // a post already reminded about is only reminded again if it moves to another time
+          const notified = !!it.notified && it.date === di.value && it.time === ti.value;
+          Object.assign(it, { designId: dsel.value, date: di.value, time: ti.value, caption: cap.value, channel: ch.value, notified });
           A.app.planner = [...(A.app.planner || []).filter((x) => x.id !== it.id), it];
           await S.setKv('planner', A.app.planner);
           U.toast('Scheduled', 'ok');
-          if (location.hash.startsWith('#/planner')) H.planner();
+          if (location.hash.startsWith('#/planner')) H.planner(plannerMonth);
         } },
       ].filter(Boolean),
     });
@@ -436,7 +451,16 @@
       }
       if (tab === 'profile') {
         const name = h('input.input', { value: A.app.profile?.name || '', placeholder: 'Your name (shown on comments)' });
-        name.addEventListener('change', async () => { A.app.profile = { ...(A.app.profile || {}), name: name.value.trim() || 'You' }; await S.setKv('profile', A.app.profile); U.toast('Saved', 'ok'); });
+        name.addEventListener('change', async () => {
+          const n = name.value.trim() || 'You';
+          A.app.profile = { ...(A.app.profile || {}), name: n };
+          await S.setKv('profile', A.app.profile);
+          // update the sidebar and avatar in place: re-routing would reset the page behind the dialog
+          U.$('.side-link.me')?.replaceChildren(h('span.avatar', n[0].toUpperCase()), h('span', n));
+          const av = U.$('.avatar-btn .avatar');
+          if (av) av.textContent = n[0].toUpperCase();
+          U.toast('Saved', 'ok');
+        });
         body.append(h('label.field', h('span', 'Display name'), name), h('p.muted.small', 'Your profile lives only on this device. Atelier has no accounts.'));
       }
       if (tab === 'ai') {
@@ -479,16 +503,13 @@
   };
   async function backup() {
     U.toast('Preparing backup…');
-    U.download(await S.exportBackup(), 'atelier-backup-' + new Date().toISOString().slice(0, 10) + '.json');
+    U.download(await S.exportBackup(), 'atelier-backup-' + U.ymd() + '.json');
   }
   async function restore() {
     const [f] = await U.pickFiles('.json', false);
     if (!f) return;
     try {
-      await S.importBackup(JSON.parse(await f.text()));
-      U.toast('Backup restored', 'ok');
-      await A.app.loadState();
-      A.app.route();
+      await A.app.restoreBackup(JSON.parse(await f.text()));
     } catch (e) {
       U.toast(e.message, 'error');
     }

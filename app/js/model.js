@@ -184,17 +184,34 @@
   };
   M.layoutOf = (d) => M.type(d.type).layout || 'vertical';
 
-  // All element ids/points shifted for duplication.
-  M.cloneElement = (el, dx = 20, dy = 20) => {
+  // All element ids/points shifted for duplication. Given the page, a connector keeps the ends it is drawn with.
+  M.cloneElement = (el, dx = 20, dy = 20, page) => {
     const c = U.clone(el);
     c.id = U.uid('e_');
     c.x += dx;
     c.y += dy;
     if (c.type === 'line') {
+      if (page) Object.assign(c, U.clone(A.R.lineEnds(el, page)));
       c.p1.x += dx; c.p1.y += dy; c.p2.x += dx; c.p2.y += dy;
       delete c.c1; delete c.c2;
+      M.syncLineBox(c);
     }
     return c;
+  };
+  // Clone a batch: groups get new ids and connectors stay attached to shapes cloned with them.
+  M.cloneElements = (els, dx = 20, dy = 20, page) => {
+    const ids = {}, groups = {};
+    const out = els.map((el) => {
+      const c = M.cloneElement(el, dx, dy, page);
+      ids[el.id] = c.id;
+      if (c.groupId) c.groupId = groups[c.groupId] ||= U.uid('g_');
+      return c;
+    });
+    els.forEach((el, i) => {
+      if (ids[el.c1]) out[i].c1 = ids[el.c1];
+      if (ids[el.c2]) out[i].c2 = ids[el.c2];
+    });
+    return out;
   };
   M.syncLineBox = (el) => {
     const pad = Math.max(el.strokeWidth * 2, 8);

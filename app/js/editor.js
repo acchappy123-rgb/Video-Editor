@@ -13,11 +13,13 @@
   E.isWB = () => !!M.type(E.d.type).whiteboard;
 
   // ---------- open / save ----------
+  // History snapshots leave out autosave metadata and the title, so saving or renaming is never an undo step.
+  const snap = () => JSON.stringify({ ...E.d, thumb: undefined, updatedAt: undefined, title: undefined });
   E.open = async (id) => {
     const d = await S.get('designs', id);
     if (!d || d.deletedAt) {
       U.toast('That design could not be found', 'error');
-      return A.app.go('#/home');
+      return location.replace('#/home');
     }
     d.pages = d.pages?.length ? d.pages : [M.newPage()];
     d.comments = d.comments || [];
@@ -26,9 +28,10 @@
     E.pi = 0;
     E.sel = [];
     E.tool = null;
-    E.hist = [JSON.stringify(d)];
+    E.editingId = E.editEl = E.textArea = E.textAreaStyle = E.enteredGroup = null;
+    E.hist = [snap()];
     E.hi = 0;
-    E.dirtySinceVersion = false;
+    E.dirty = E.dirtySinceVersion = false;
     await S.ensureAssetURLs(S.designAssetIds(d));
     A.EU.build();
     requestAnimationFrame(() => {
@@ -40,32 +43,47 @@
   };
   E.close = async () => {
     if (!E.d) return;
+    E.finishText();
+    E.flushCommit();
     clearInterval(E.versionTimer);
-    E.saveNow.flush?.();
-    await E.save();
+    // an untouched design keeps its 'last edited' time (it is only saved for a missing card preview)
+    if (E.dirty || !E.d.thumb) await E.save();
     await E.snapshot();
     A.Present?.stopPreview?.();
     E.d = null;
   };
-  E.save = async () => {
-    if (!E.d) return;
+  // Writes the design before rendering its card thumbnail, so an unload mid-save keeps the edits. Resolves true when saved.
+  E.save = async ({ thumb = true } = {}) => {
     const d = E.d;
+    if (!d) return false;
+    E.dirty = false;
     A.EU.saveState('saving');
     try {
-      d.thumb = await R.thumbnail(d);
       await S.saveDesign(d);
-      A.EU.saveState('saved');
     } catch (e) {
       console.error(e);
+      E.dirty = true;
       A.EU.saveState('error');
+      return false;
     }
+    A.EU.saveState(E.dirty ? 'pending' : 'saved');
+    if (thumb) {
+      try {
+        d.thumb = await R.thumbnail(d);
+        if (E.d === d) await S.put('designs', d);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    return true;
   };
-  E.saveNow = U.debounce(() => E.save(), 900);
+  E.saveNow = U.debounce((o) => E.dirty && E.save(o), 900);
   E.scheduleSave = () => {
-    E.dirtySinceVersion = true;
+    E.dirty = E.dirtySinceVersion = true;
     A.EU.saveState('pending');
     E.saveNow();
   };
+  const saveKey = () => E.save().then((ok) => (ok ? U.toast('Saved', 'ok') : U.toast('Could not save – storage may be full', 'error')));
   E.snapshot = async (label = '') => {
     if (!E.d || (!E.dirtySinceVersion && !label)) return;
     E.dirtySinceVersion = false;
@@ -73,8 +91,11 @@
   };
 
   // ---------- history ----------
+  let commitT = 0;
   E.pushHistory = () => {
-    const s = JSON.stringify(E.d);
+    clearTimeout(commitT);
+    commitT = 0;
+    const s = snap();
     if (s === E.hist[E.hi]) return;
     E.hist = E.hist.slice(0, E.hi + 1);
     E.hist.push(s);
@@ -82,32 +103,60 @@
     E.hi = E.hist.length - 1;
     A.EU.refreshUndo();
   };
-  const restore = (s) => {
-    E.d = JSON.parse(s);
-    E.pi = Math.min(E.pi, E.d.pages.length - 1);
-    E.sel = E.sel.filter((id) => E.byId(id));
+  // A burst of changes (arrow-key nudges) becomes one undo step once it goes quiet.
+  E.commitSoon = () => {
+    clearTimeout(commitT);
+    commitT = setTimeout(E.pushHistory, 400);
+  };
+  E.flushCommit = () => commitT && E.pushHistory();
+  // Go from snapshot `from` to `to`, showing the page that changed with its changed elements selected.
+  const restore = (from, to) => {
+    const { thumb, updatedAt, title } = E.d, pi0 = E.pi;
+    E.d = Object.assign(JSON.parse(to), { thumb, updatedAt, title });
+    const prev = JSON.parse(from).pages, pages = E.d.pages;
+    let i = pages.findIndex((p, k) => JSON.stringify(p) !== JSON.stringify(prev[k]));
+    if (i < 0 && pages.length !== prev.length) i = pages.length - 1;
+    if (i >= 0) {
+      E.pi = i;
+      const was = prev.find((p) => p.id === pages[i].id);
+      const old = new Map(was?.elements.map((el) => [el.id, JSON.stringify(el)]));
+      E.sel = was ? pages[i].elements.filter((el) => old.get(el.id) !== JSON.stringify(el)).map((el) => el.id) : [];
+    } else {
+      E.pi = Math.min(E.pi, pages.length - 1);
+      E.sel = E.sel.filter((id) => E.byId(id));
+    }
     E.buildPages();
+    if (E.pi !== pi0) E.blocks[E.pi]?.el.scrollIntoView({ block: 'nearest' });
     A.EU.refreshAll();
     E.scheduleSave();
   };
   E.undo = () => {
+    E.finishText();
+    E.flushCommit();
     if (E.hi <= 0) return;
     E.hi--;
-    restore(E.hist[E.hi]);
+    restore(E.hist[E.hi + 1], E.hist[E.hi]);
   };
   E.redo = () => {
+    E.finishText();
+    E.flushCommit();
     if (E.hi >= E.hist.length - 1) return;
     E.hi++;
-    restore(E.hist[E.hi]);
+    restore(E.hist[E.hi - 1], E.hist[E.hi]);
   };
 
   // Call after mutating the document.
   E.changed = ({ commit = true, all = false, toolbar = true, structure = false } = {}) => {
+    if (E.isWB()) growBoard();
     if (structure) E.buildPages();
     else if (all) E.renderAll();
     else E.renderPage(E.pi);
     E.drawOverlay();
-    if (toolbar) A.EU.refreshToolbar();
+    if (toolbar) {
+      A.EU.refreshToolbar();
+      // contextual panels show the new values, unless the change came from the panel being used
+      if (!A.EU.panelEl?.contains(document.activeElement)) A.EU.refreshPanel?.();
+    }
     if (commit) E.pushHistory();
     E.scheduleSave();
     if (structure || all) A.EU.refreshTimeline?.();
@@ -195,17 +244,35 @@
   };
 
   // ---------- zoom ----------
-  E.setZoom = (z, keepCenter = true) => {
+  // Re-render at zoom z; `place` scrolls before the overlay is drawn, so the mini-menu is placed for the final view.
+  const zoomTo = (z, place) => {
+    E.zoom = z;
+    for (const i in E.blocks) E.renderPage(+i);
+    place?.();
+    E.drawOverlay();
+    A.EU.refreshZoom();
+  };
+  // `anchor` keeps a page point in place on screen: true = the viewport centre, or a client {x, y} (cursor, pinch midpoint).
+  E.setZoom = (z, anchor = true) => {
     z = U.clamp(z, 0.05, 8);
     const wrap = E.scrollEl;
-    const cx = wrap ? (wrap.scrollLeft + wrap.clientWidth / 2) / E.zoom : 0, cy = wrap ? (wrap.scrollTop + wrap.clientHeight / 2) / E.zoom : 0;
-    E.zoom = z;
-    E.renderAll();
-    if (wrap && keepCenter) {
-      wrap.scrollLeft = cx * z - wrap.clientWidth / 2;
-      wrap.scrollTop = cy * z - wrap.clientHeight / 2;
+    let a = null;
+    if (wrap && anchor) {
+      const sr = wrap.getBoundingClientRect();
+      const x = anchor.x ?? sr.left + wrap.clientWidth / 2, y = anchor.y ?? sr.top + wrap.clientHeight / 2;
+      // page padding, heads and gaps don't scale, so measure against the page block nearest to the anchor
+      let best = Infinity;
+      for (const k in E.blocks) {
+        const r = E.blocks[k].svg.getBoundingClientRect();
+        const dist = Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
+        if (dist < best) { best = dist; a = { b: E.blocks[k], x, y, px: (x - r.left) / E.zoom, py: (y - r.top) / E.zoom }; }
+      }
     }
-    A.EU.refreshZoom();
+    zoomTo(z, a && (() => {
+      const r = a.b.svg.getBoundingClientRect();
+      wrap.scrollLeft += r.left + a.px * z - a.x;
+      wrap.scrollTop += r.top + a.py * z - a.y;
+    }));
   };
   E.fit = () => {
     const wrap = E.scrollEl;
@@ -213,14 +280,25 @@
     const pad = innerWidth < 700 ? 24 : 80;
     const zw = (wrap.clientWidth - pad) / E.d.width;
     const zh = (wrap.clientHeight - pad - 40) / E.d.height;
-    E.zoom = U.clamp(Math.min(zw, E.layout() === 'strip' || E.isWB() ? zh : zw * 1, zh * (E.layout() === 'vertical' ? 1.0 : 1)), 0.05, 2);
-    A.EU.refreshZoom();
+    const z = U.clamp(Math.min(zw, E.layout() === 'strip' || E.isWB() ? zh : zw * 1, zh * (E.layout() === 'vertical' ? 1.0 : 1)), 0.05, 2);
+    const b = E.blocks[E.pi];
+    if (!b || !E.pagesEl?.contains(b.el)) { E.zoom = z; return A.EU.refreshZoom(); }
+    // already showing pages: re-render and centre the current page
+    zoomTo(z, () => {
+      const r = b.el.getBoundingClientRect(), sr = wrap.getBoundingClientRect();
+      wrap.scrollLeft += r.left + r.width / 2 - sr.left - wrap.clientWidth / 2;
+      wrap.scrollTop += r.top + r.height / 2 - sr.top - wrap.clientHeight / 2;
+    });
   };
 
   // ---------- pages ----------
   E.setPage = (i, scroll = true) => {
     if (i < 0 || i >= E.d.pages.length) return;
     const changed = i !== E.pi;
+    if (changed) {
+      commitField();
+      E.finishText();
+    }
     E.pi = i;
     if (changed) E.sel = [];
     if (E.layout() === 'strip') {
@@ -235,6 +313,7 @@
     A.EU.refreshPageInfo?.();
   };
   E.addPage = (at = E.d.pages.length, page) => {
+    E.finishText();
     const p = page || M.newPage({ bg: { color: E.page()?.bg?.color && !E.page().bg.asset ? E.page().bg.color : '#ffffff' } });
     E.d.pages.splice(at, 0, p);
     E.pi = at;
@@ -243,6 +322,7 @@
     setTimeout(() => E.blocks[at]?.el.scrollIntoView({ block: 'center', behavior: 'smooth' }), 30);
   };
   E.duplicatePage = (i) => {
+    E.finishText();
     const p = U.clone(E.d.pages[i]);
     p.id = U.uid('p_');
     const map = {};
@@ -254,16 +334,21 @@
     E.addPage(i + 1, p);
   };
   E.deletePage = (i) => {
+    E.finishText();
+    const gone = E.d.pages[i].id;
     if (E.d.pages.length === 1) {
       E.d.pages[0] = M.newPage();
     } else E.d.pages.splice(i, 1);
+    if (i < E.pi) E.pi--;
     E.pi = Math.min(E.pi, E.d.pages.length - 1);
     E.sel = [];
+    E.d.comments = (E.d.comments || []).filter((c) => c.pageId !== gone);
     E.changed({ structure: true });
   };
   E.movePage = (i, dir) => {
     const j = i + dir;
     if (j < 0 || j >= E.d.pages.length) return;
+    E.finishText();
     const [p] = E.d.pages.splice(i, 1);
     E.d.pages.splice(j, 0, p);
     E.pi = j;
@@ -295,10 +380,23 @@
     }
     return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
   };
+  // Store a connector's drawn ends in p1/p2 (they go stale while its shapes move); `detach` lets it move on its own.
+  E.bakeEnds = (el, detach = false) => {
+    if (el.type !== 'line' || !(el.c1 || el.c2)) return;
+    Object.assign(el, U.clone(R.lineEnds(el, E.page())));
+    if (detach) { delete el.c1; delete el.c2; }
+    M.syncLineBox(el);
+  };
   const groupMembers = (el) => (el.groupId ? E.els().filter((e) => e.groupId === el.groupId).map((e) => e.id) : [el.id]);
 
   // ---------- selection ----------
+  // A value typed into a toolbar or panel field is committed (its 'change' fires) before the selection moves on.
+  const commitField = (scope = '*') => {
+    const a = document.activeElement;
+    if (a && a !== E.textArea && a.matches('input, select, textarea') && a.closest(scope)) a.blur();
+  };
   E.select = (ids, add = false) => {
+    commitField();
     E.sel = add ? [...new Set([...E.sel, ...ids])] : ids;
     if (E.editingId && !E.sel.includes(E.editingId)) E.finishText();
     E.drawOverlay();
@@ -311,11 +409,12 @@
   E.drawOverlay = () => {
     for (const k in E.blocks) {
       const b = E.blocks[k];
-      b.overlay.innerHTML = '';
+      for (const c of [...b.overlay.children]) if (c !== E.textArea) c.remove();
       drawGuides(b, +k);
       drawRulers(b);
       drawCommentPins(b, +k);
     }
+    keepTextArea();
     const b = E.blocks[E.pi];
     if (!b) return;
     E.hoverBox = U.h('div.hover-box');
@@ -353,9 +452,11 @@
       if (!single) sides = [];
       else if (t === 'text') sides = single.curve ? [] : ['e', 'w'];
       else if (t === 'emoji') sides = [];
-      const small = box.w * z < 40 || box.h * z < 40;
+      // text only has width handles, so a short line keeps them (shortened to clear the corner dots)
+      const short = box.h * z < 40, small = box.w * z < 40 || (short && t !== 'text');
       for (const h of [...corners, ...(small ? [] : sides)]) {
         const hd = U.h('div.handle.' + h + (sides.includes(h) ? '.side' : ''), { 'data-h': h });
+        if (short && sides.includes(h)) hd.style.height = Math.max(8, box.h * z - 16) + 'px';
         hd.addEventListener('pointerdown', (e) => startResize(e, h));
         sb.appendChild(hd);
       }
@@ -391,6 +492,15 @@
       btn('more', 'More', (e) => E.onContext(e, E.pi, true))
     );
     b.overlay.appendChild(m);
+    // keep it inside the visible canvas; with no room above (page head, top of the view) put it below the handles
+    const wrap = E.scrollEl, sr = wrap.getBoundingClientRect(), fr = b.frame.getBoundingClientRect(), mr = m.getBoundingClientRect();
+    const minTop = Math.max(fr.top, sr.top) + 4;
+    if (mr.top < minTop) {
+      const below = fr.top + (box.y + box.h) * z + 48;
+      m.style.top = (below + mr.height <= sr.top + wrap.clientHeight - 4 ? below : minTop) - fr.top + 'px';
+    }
+    const dx = Math.max(sr.left + 4 - mr.left, Math.min(0, sr.left + wrap.clientWidth - 4 - mr.right));
+    if (dx) m.style.left = (box.x + box.w / 2) * z + dx + 'px';
   }
   function drawGuides(b, i) {
     if (!E.d.guides?.length) return;
@@ -449,10 +559,12 @@
     const id = hitId(e, i);
     const el = id && E.byId(id);
     if (!el || E.sel.includes(id)) return (E.hoverBox.style.display = 'none');
-    const b = E.bbox(el), z = E.zoom;
-    Object.assign(E.hoverBox.style, { display: 'block', left: b.x * z + 'px', top: b.y * z + 'px', width: b.w * z + 'px', height: b.h * z + 'px' });
+    // outline the element itself (rotated like the selection box); lines by their drawn ends
+    const line = el.type === 'line', b = line ? E.bbox(el) : el, z = E.zoom;
+    Object.assign(E.hoverBox.style, { display: 'block', left: b.x * z + 'px', top: b.y * z + 'px', width: b.w * z + 'px', height: b.h * z + 'px', transform: line ? 'none' : `rotate(${el.rot || 0}deg)` });
   };
   E.onPointerDown = (e, i) => {
+    if (e.pointerType === 'touch' && trackTouch(e) > 1) return;
     if (e.button === 2) {
       const id = hitId(e, i);
       if (i !== E.pi) E.setPage(i, false);
@@ -461,17 +573,17 @@
     }
     if (e.button !== 0) return;
     if (e.target.closest('.handle,.rot-handle,.move-handle,.mini-menu,.comment-pin,.ruler,.user-guide')) return;
+    // hit-test first: finishing a text edit re-renders the page and detaches e.target
+    const id = hitId(e, i);
     if (i !== E.pi) E.setPage(i, false);
     if (E.editingId) E.finishText();
     if (E.tool === 'draw') return startDraw(e, i);
     if (E.tool === 'comment') {
       const p = E.toPage(e, i);
-      const id = hitId(e, i);
       E.tool = null;
       A.EU.refreshTool();
       return A.EU.addComment(id ? E.byId(id) : null, p);
     }
-    const id = hitId(e, i);
     const el = id && E.byId(id);
     if (E.tool === 'motion') {
       if (el) return recordMotion(e, el);
@@ -483,7 +595,9 @@
       A.EU.onPageClick?.();
       return startMarquee(e, i);
     }
-    const ids = E.enteredGroup === el.groupId && el.groupId ? [el.id] : groupMembers(el);
+    // stay inside an entered group only while the selection is still in it
+    const inGroup = el.groupId && E.enteredGroup === el.groupId && E.selEls().some((x) => x.groupId === el.groupId);
+    const ids = inGroup ? [el.id] : groupMembers(el);
     if (e.shiftKey) {
       const has = ids.every((x) => E.sel.includes(x));
       E.select(has ? E.sel.filter((x) => !ids.includes(x)) : [...E.sel, ...ids]);
@@ -513,18 +627,93 @@
     A.EU.contextMenu(fromButton ? e.currentTarget : { x: e.clientX, y: e.clientY });
   };
 
-  function session(onMove, onUp) {
-    const move = (ev) => onMove(ev);
-    const up = (ev) => {
+  // A drag driven by the pointer that started it; other pointers and a design closed mid-drag are ignored.
+  let active = null;
+  function session(e0, onMove, onUp) {
+    if (e0.pointerType === 'touch' && trackTouch(e0) > 1) return;
+    const d = E.d, id = e0.pointerId, page = E.page(), objs = [...page.elements], saved = JSON.stringify(objs), sel0 = E.sel;
+    const end = () => {
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', up);
       removeEventListener('pointercancel', up);
       E.dragging = false;
-      onUp && onUp(ev);
+      active = null;
+    };
+    const move = (ev) => ev.pointerId === id && E.d === d && onMove(ev);
+    const up = (ev) => {
+      if (ev.pointerId !== id) return;
+      end();
+      if (onUp && E.d === d) onUp(ev);
     };
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
     addEventListener('pointercancel', up);
+    // cancelling (a second finger came down) puts the page back as it was, without an undo step
+    active = {
+      cancel: () => {
+        end();
+        JSON.parse(saved).forEach((s, k) => { const o = objs[k]; for (const key in o) delete o[key]; Object.assign(o, s); });
+        page.elements = objs;
+        E.renderPage(E.pi);
+        E.select(sel0.filter((x) => E.byId(x)));
+      },
+    };
+  }
+
+  // Touch: a second finger cancels the running drag and pinch-zooms / pans the canvas (.page-frame has touch-action: none).
+  const touches = new Map();
+  function trackTouch(e) {
+    const id = e.pointerId;
+    if (touches.has(id)) return touches.size;
+    // a primary touch starts a new gesture: anything still listed missed its pointerup
+    if (e.isPrimary) for (const t of [...touches.values()]) t.off();
+    const t = {
+      x: e.clientX, y: e.clientY,
+      off: () => {
+        touches.delete(id);
+        removeEventListener('pointermove', move, true);
+        removeEventListener('pointerup', up, true);
+        removeEventListener('pointercancel', up, true);
+      },
+    };
+    const move = (ev) => { if (ev.pointerId === id) { t.x = ev.clientX; t.y = ev.clientY; } };
+    const up = (ev) => ev.pointerId === id && t.off();
+    addEventListener('pointermove', move, true);
+    addEventListener('pointerup', up, true);
+    addEventListener('pointercancel', up, true);
+    touches.set(id, t);
+    if (touches.size === 2) startPinch();
+    return touches.size;
+  }
+  function startPinch() {
+    active?.cancel();
+    const wrap = E.scrollEl;
+    const mid = () => {
+      const [p, q] = [...touches.values()];
+      return { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2, d: Math.hypot(p.x - q.x, p.y - q.y) || 1 };
+    };
+    const last = mid();
+    E.dragging = true;
+    const move = (ev) => {
+      if (!touches.has(ev.pointerId) || touches.size !== 2 || !E.d) return;
+      const m = mid();
+      // zoom about the previous midpoint, then pan by how far the midpoint moved
+      if (Math.abs(m.d / last.d - 1) > 0.02) { E.setZoom(E.zoom * (m.d / last.d), last); last.d = m.d; }
+      wrap.scrollLeft += last.x - m.x;
+      wrap.scrollTop += last.y - m.y;
+      last.x = m.x; last.y = m.y;
+    };
+    const end = () => {
+      if (touches.size > 1) return;
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', end);
+      removeEventListener('pointercancel', end);
+      E.dragging = false;
+      if (E.d) E.drawOverlay();
+    };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', end);
+    addEventListener('pointercancel', end);
   }
 
   // Move with smart guides. Alt/Option-drag copies.
@@ -535,26 +724,25 @@
     const sx = e.clientX, sy = e.clientY;
     let started = false, copied = false;
     let orig = [];
-    const snapshot = () => (orig = els.map((el) => ({ el, x: el.x, y: el.y, p1: el.p1 && { ...el.p1 }, p2: el.p2 && { ...el.p2 } })));
-    snapshot();
     const box0 = E.unionBox(els);
     session(
+      e,
       (ev) => {
         const dx = (ev.clientX - sx) / E.zoom, dy = (ev.clientY - sy) / E.zoom;
         if (!started && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return;
         if (!started) {
           started = true;
           E.dragging = true;
+          // connectors move from where they are drawn, not from stale stored ends
+          els.forEach((x) => E.bakeEnds(x));
           if (ev.altKey && !copied) {
             copied = true;
-            const clones = els.map((x) => M.cloneElement(x, 0, 0));
-            const gmap = {};
-            clones.forEach((c) => c.groupId && (c.groupId = gmap[c.groupId] ||= U.uid('g_')));
+            const clones = M.cloneElements(els, 0, 0);
             E.page().elements.push(...clones);
             E.sel = clones.map((c) => c.id);
             els = clones;
-            snapshot();
           }
+          orig = els.map((el) => ({ el, x: el.x, y: el.y, p1: el.p1 && { ...el.p1 }, p2: el.p2 && { ...el.p2 } }));
         }
         let mx = dx, my = dy;
         const guides = [];
@@ -579,8 +767,8 @@
       },
       () => {
         if (!started) return;
-        if (E.isWB()) growBoard();
         E.changed();
+        if (copied) A.EU.onSelectionChange?.();
       }
     );
   }
@@ -653,6 +841,7 @@
     let started = false;
     const base = e.shiftKey ? [...E.sel] : [];
     session(
+      e,
       (ev) => {
         const p = E.toPage(ev, i);
         if (!started && Math.hypot(p.x - p0.x, p.y - p0.y) * z < 4) return;
@@ -689,10 +878,13 @@
       const o = U.clone(el);
       const th = ((el.rot || 0) * Math.PI) / 180, cos = Math.cos(th), sin = Math.sin(th);
       const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
-      const ax = cx + cos * (-hx * o.w / 2) - sin * (-hy * o.h / 2);
-      const ay = cy + sin * (-hx * o.w / 2) + cos * (-hy * o.h / 2);
+      // the opposite side stays put; text width handles also keep its top edge (the height follows the wrap)
+      const vy = hy || (el.type === 'text' ? 1 : 0);
+      const ax = cx + cos * (-hx * o.w / 2) - sin * (-vy * o.h / 2);
+      const ay = cy + sin * (-hx * o.w / 2) + cos * (-vy * o.h / 2);
       const sx = e.clientX, sy = e.clientY;
       session(
+        e,
         (ev) => {
           const dx = (ev.clientX - sx) / E.zoom, dy = (ev.clientY - sy) / E.zoom;
           const lx = cos * dx + sin * dy, ly = -sin * dx + cos * dy;
@@ -705,13 +897,14 @@
             nh = o.h * k;
           }
           if (el.type === 'image' && !corner) {
-            // side handles crop the image
+            // side handles crop the image (a flipped picture is cropped on its mirrored side)
             const c = { ...o.crop };
             const pxPerX = o.w / c.w, pxPerY = o.h / c.h;
-            if (hx === 1) { c.w = U.clamp(nw / pxPerX, 0.02, 1 - c.x); nw = c.w * pxPerX; }
-            if (hx === -1) { const right = c.x + c.w; c.w = U.clamp(nw / pxPerX, 0.02, right); c.x = right - c.w; nw = c.w * pxPerX; }
-            if (hy === 1) { c.h = U.clamp(nh / pxPerY, 0.02, 1 - c.y); nh = c.h * pxPerY; }
-            if (hy === -1) { const bottom = c.y + c.h; c.h = U.clamp(nh / pxPerY, 0.02, bottom); c.y = bottom - c.h; nh = c.h * pxPerY; }
+            const fx = el.flipX ? -hx : hx, fy = el.flipY ? -hy : hy;
+            if (fx === 1) { c.w = U.clamp(nw / pxPerX, 0.02, 1 - c.x); nw = c.w * pxPerX; }
+            if (fx === -1) { const right = c.x + c.w; c.w = U.clamp(nw / pxPerX, 0.02, right); c.x = right - c.w; nw = c.w * pxPerX; }
+            if (fy === 1) { c.h = U.clamp(nh / pxPerY, 0.02, 1 - c.y); nh = c.h * pxPerY; }
+            if (fy === -1) { const bottom = c.y + c.h; c.h = U.clamp(nh / pxPerY, 0.02, bottom); c.y = bottom - c.h; nh = c.h * pxPerY; }
             el.crop = c;
           }
           if (el.type === 'text') {
@@ -726,17 +919,12 @@
           }
           if (el.type === 'shape' && el.text && corner && prop) el.size = Math.max(4, U.round(o.size * (nw / o.w), 1));
           if (el.type === 'table' && corner) el.size = Math.max(6, U.round(o.size * Math.min(nw / o.w, nh / o.h), 1));
-          const ncx = ax + cos * (hx * nw / 2) - sin * (hy * nh / 2);
-          const ncy = ay + sin * (hx * nw / 2) + cos * (hy * nh / 2);
+          const ncx = ax + cos * (hx * nw / 2) - sin * (vy * nh / 2);
+          const ncy = ay + sin * (hx * nw / 2) + cos * (vy * nh / 2);
           el.w = nw;
           el.h = nh;
-          el.x = (hx || el.type === 'text' ? ncx : cx) - nw / 2;
-          el.y = (hy || el.type === 'text' ? ncy : cy) - nh / 2;
-          if (el.type === 'text' && !hy) {
-            // keep the top edge in place when only the width changes
-            el.x = ncx - nw / 2;
-            el.y = o.y;
-          }
+          el.x = ncx - nw / 2;
+          el.y = ncy - nh / 2;
           E.renderPage(E.pi);
           E.drawOverlay();
           sizeLabel(el);
@@ -749,6 +937,7 @@
       const orig = els.map((el) => U.clone(el));
       const sx = e.clientX, sy = e.clientY;
       session(
+        e,
         (ev) => {
           const dx = (ev.clientX - sx) / E.zoom, dy = (ev.clientY - sy) / E.zoom;
           const k = Math.max(0.05, Math.max((box.w + hx * dx) / box.w, (box.h + hy * dy) / box.h));
@@ -788,6 +977,7 @@
     const r0 = el.rot || 0;
     E.dragging = true;
     session(
+      e,
       (ev) => {
         const a = Math.atan2(ev.clientY - c.y, ev.clientX - c.x);
         let deg = r0 + ((a - a0) * 180) / Math.PI;
@@ -803,6 +993,10 @@
       () => E.changed()
     );
   }
+  const inBox = (p, o) => {
+    const t = (-(o.rot || 0) * Math.PI) / 180, dx = p.x - o.x - o.w / 2, dy = p.y - o.y - o.h / 2;
+    return Math.abs(dx * Math.cos(t) - dy * Math.sin(t)) <= o.w / 2 && Math.abs(dx * Math.sin(t) + dy * Math.cos(t)) <= o.h / 2;
+  };
   function startLineEnd(e, el, k) {
     e.stopPropagation();
     e.preventDefault();
@@ -810,15 +1004,16 @@
     E.dragging = true;
     const ck = k === 'p1' ? 'c1' : 'c2';
     session(
+      e,
       (ev) => {
         const p = E.toPage(ev);
-        // snap to shapes to form connectors
-        const target = E.els().find((o) => o.id !== el.id && o.type !== 'line' && p.x >= o.x && p.x <= o.x + o.w && p.y >= o.y && p.y <= o.y + o.h);
+        // snap to the topmost visible shape under the pointer to form a connector
+        const target = [...E.els()].reverse().find((o) => o.id !== el.id && o.type !== 'line' && !o.hidden && inBox(p, o));
         if (target) el[ck] = target.id;
         else delete el[ck];
         let q = { x: p.x, y: p.y };
         if (ev.shiftKey) {
-          const other = k === 'p1' ? el.p2 : el.p1;
+          const other = R.lineEnds(el, E.page())[k === 'p1' ? 'p2' : 'p1'];
           const ang = Math.round(Math.atan2(q.y - other.y, q.x - other.x) / (Math.PI / 4)) * (Math.PI / 4);
           const len = Math.hypot(q.x - other.x, q.y - other.y);
           q = { x: other.x + Math.cos(ang) * len, y: other.y + Math.sin(ang) * len };
@@ -839,6 +1034,7 @@
     const pts = [E.toPage(e, i)];
     if (E.pen.pen === 'eraser') {
       session(
+        e,
         (ev) => {
           const p = E.toPage(ev, i);
           const before = E.els().length;
@@ -850,7 +1046,6 @@
       return;
     }
     const el = M.newDraw({ stroke: E.pen.color, strokeWidth: E.pen.pen === 'highlighter' ? E.pen.size * 3 : E.pen.pen === 'marker' ? E.pen.size * 1.8 : E.pen.size, pen: E.pen.pen });
-    E.page().elements.push(el);
     const sync = () => {
       const pad = el.strokeWidth / 2;
       const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
@@ -859,6 +1054,7 @@
       el.pts = pts.map((p) => [U.round((p.x - x1) / el.w, 4), U.round((p.y - y1) / el.h, 4)]);
     };
     session(
+      e,
       (ev) => {
         const p = E.toPage(ev, i);
         const last = pts[pts.length - 1];
@@ -873,6 +1069,8 @@
         E.changed();
       }
     );
+    // added after the session starts, so cancelling the session drops the stroke
+    E.page().elements.push(el);
   }
   function nearStroke(el, p) {
     return (el.pts || []).some(([x, y]) => Math.hypot(el.x + x * el.w - p.x, el.y + y * el.h - p.y) < Math.max(10, el.strokeWidth));
@@ -882,19 +1080,32 @@
   function recordMotion(e, el) {
     const sx = e.clientX, sy = e.clientY, t0 = performance.now();
     const ox = el.x, oy = el.y;
+    // a line is drawn from its ends, so those move (detached) while recording and are put back after
+    const line = el.type === 'line' && { p1: el.p1, p2: el.p2, c1: el.c1, c2: el.c2, ends: U.clone(R.lineEnds(el, E.page())) };
     const pts = [{ t: 0, dx: 0, dy: 0 }];
     E.dragging = true;
     session(
+      e,
       (ev) => {
         const dx = (ev.clientX - sx) / E.zoom, dy = (ev.clientY - sy) / E.zoom;
         pts.push({ t: U.round((performance.now() - t0) / 1000, 3), dx: U.round(dx, 1), dy: U.round(dy, 1) });
         el.x = ox + dx;
         el.y = oy + dy;
+        if (line) {
+          delete el.c1; delete el.c2;
+          el.p1 = { x: line.ends.p1.x + dx, y: line.ends.p1.y + dy };
+          el.p2 = { x: line.ends.p2.x + dx, y: line.ends.p2.y + dy };
+        }
         E.renderPage(E.pi);
       },
       () => {
         el.x = ox;
         el.y = oy;
+        if (line) {
+          el.p1 = line.p1; el.p2 = line.p2;
+          if (line.c1) el.c1 = line.c1;
+          if (line.c2) el.c2 = line.c2;
+        }
         E.tool = null;
         A.EU.refreshTool();
         if (pts.length > 3) {
@@ -914,26 +1125,38 @@
   };
 
   // ---------- text editing ----------
+  const fitText = (el) => {
+    if (el.curve) { const g = R.curveGeom(el); el.w = g.w; el.h = g.h; }
+    else el.h = R.textHeight(el);
+  };
   E.editText = (el) => {
+    if (el.locked || !E.canEdit()) return;
     if (E.editingId) E.finishText();
     if (el.type === 'shape' && !el.text) {
-      Object.assign(el, { ...M.textDefaults, color: U.luminance(String(el.fill).startsWith('#') ? el.fill : '#888888') > 0.6 ? '#1a1a1a' : '#ffffff', align: 'center', size: Math.max(16, Math.round(Math.min(el.w, el.h) / 6)), text: '' });
+      // contrast with the fill, or with the page when the shape has no solid fill
+      const base = [el.asset ? '#888888' : el.fill, E.page().bg?.color].map((c) => String(c).replace(/^grad:/, '').split(':')[0]).find(U.isColor) || '#ffffff';
+      Object.assign(el, { ...M.textDefaults, color: U.luminance(base) > 0.6 ? '#1a1a1a' : '#ffffff', align: 'center', size: Math.max(16, Math.round(Math.min(el.w, el.h) / 6)), text: '' });
     }
     E.editingId = el.id;
+    E.editEl = el;
     E.sel = [el.id];
     E.renderPage(E.pi);
     E.drawOverlay();
-    const b = E.blocks[E.pi], z = E.zoom;
+    const b = E.blocks[E.pi];
     const shape = el.type === 'shape';
     const px = shape ? Math.min(el.w * 0.1, 24) : 0;
     const ta = U.h('textarea.text-edit', { spellcheck: 'true' });
     ta.value = el.text || '';
     const style = () => {
+      const z = E.zoom;
       const lines = R.layoutText(el, el.w - px * 2);
+      // list text starts after its bullet or number; shape text is centred vertically, even when it overflows
+      const pw = el.list === 'bullet' || el.list === 'number' ? U.measure(el.list === 'number' ? '1.  ' : '•  ', lines.font, lines.ls) : 0;
+      const top = shape ? (el.h - lines.height) / 2 : 0;
       Object.assign(ta.style, {
-        left: (el.x + px) * z + 'px',
-        top: (el.y + (shape ? Math.max(0, (el.h - lines.height) / 2) : 0)) * z + 'px',
-        width: (el.w - px * 2) * z + 'px',
+        left: (el.x + px + pw) * z + 'px',
+        top: (el.y + top) * z + 'px',
+        width: (el.w - px * 2 - pw) * z + 'px',
         height: Math.max(lines.height, el.size * (el.lh || 1.3)) * z + 'px',
         fontFamily: M.fontStack(el.font),
         fontSize: el.size * z + 'px',
@@ -946,31 +1169,41 @@
         textAlign: el.align === 'justify' ? 'left' : el.align,
         color: String(el.color).startsWith('grad:') ? el.color.split(':')[1] : el.color,
         transform: `rotate(${el.rot || 0}deg)`,
-        transformOrigin: `${(el.w / 2 - px) * z}px ${(el.h / 2) * z}px`,
+        transformOrigin: `${(el.w / 2 - px - pw) * z}px ${(el.h / 2 - top) * z}px`,
+        zIndex: 3,
       });
     };
     style();
     ta.addEventListener('input', () => {
       el.text = ta.value;
-      if (el.type === 'text') {
-        if (el.curve) { const g = R.curveGeom(el); el.w = g.w; el.h = g.h; }
-        else el.h = R.textHeight(el);
-      }
-      style();
-      E.drawOverlayKeep(ta);
+      if (el.type === 'text') fitText(el);
+      E.drawOverlay();
+      E.scheduleSave();
     });
     ta.addEventListener('keydown', (ev) => {
       ev.stopPropagation();
+      const mod = ev.ctrlKey || ev.metaKey, k = ev.key?.toLowerCase();
       if (ev.key === 'Escape') E.finishText();
-      if ((ev.ctrlKey || ev.metaKey) && ['b', 'i', 'u'].includes(ev.key.toLowerCase())) {
+      if (mod && k === 's') {
         ev.preventDefault();
-        const k = { b: 'bold', i: 'italic', u: 'underline' }[ev.key.toLowerCase()];
-        el[k] = !el[k];
-        style();
-        A.EU.refreshToolbar();
+        saveKey();
+      }
+      if (mod && ['b', 'i', 'u'].includes(k)) {
+        ev.preventDefault();
+        const key = { b: 'bold', i: 'italic', u: 'underline' }[k];
+        el[key] = !el[key];
+        if (el.type === 'text') fitText(el);
+        E.changed();
       }
     });
     ta.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    // the native menu (spelling, cut/copy/paste of text), not the element menu
+    ta.addEventListener('contextmenu', (ev) => ev.stopPropagation());
+    // moving to the toolbar, a panel, a popover or the zoom bar keeps editing (their redraw refocuses the text)
+    ta.addEventListener('focusout', (ev) => {
+      if (!ev.relatedTarget || ev.relatedTarget.closest('.ed-toolbar, .ed-panel, .ed-bottom, .popover')) return;
+      setTimeout(() => E.textArea === ta && document.activeElement !== ta && E.finishText());
+    });
     E.textArea = ta;
     E.textAreaStyle = style;
     b.overlay.appendChild(ta);
@@ -979,24 +1212,36 @@
     else ta.setSelectionRange(ta.value.length, ta.value.length);
     A.EU.refreshToolbar();
   };
-  E.drawOverlayKeep = (ta) => {
-    const b = E.blocks[E.pi];
-    E.drawOverlay();
-    b.overlay.appendChild(ta);
-    ta.focus();
-  };
+  // Overlay redraws (toolbar, zoom, resize, undo) keep the live editor on its page, restyled and focused.
+  function keepTextArea() {
+    const ta = E.textArea;
+    if (!ta) return;
+    const i = E.d.pages.findIndex((p) => p.elements.includes(E.editEl)), b = E.blocks[i];
+    if (!b) {
+      // the edited element is gone (deleted, or the document was replaced): end the session and draw what was left out
+      E.editingId = E.editEl = E.textArea = E.textAreaStyle = null;
+      ta.remove();
+      for (const k in E.blocks) E.renderPage(+k);
+      return;
+    }
+    if (ta.parentNode !== b.overlay) b.overlay.appendChild(ta);
+    E.textAreaStyle();
+    const a = document.activeElement;
+    if (a !== ta && (!a || a === document.body || (a.closest('.editor, .popover') && !a.matches('input, select, textarea')))) ta.focus({ preventScroll: true });
+  }
   E.restyleText = () => E.textAreaStyle && E.textAreaStyle();
   E.finishText = () => {
     if (!E.editingId) return;
-    const el = E.byId(E.editingId);
-    E.editingId = null;
+    commitField('.ed-toolbar, .ed-panel, .popover');
+    const el = E.editEl, page = E.d.pages.find((p) => p.elements.includes(el));
+    E.editingId = E.editEl = null;
     E.textArea?.remove();
-    E.textArea = null;
-    E.textAreaStyle = null;
-    if (el && el.type === 'text' && !el.text.trim()) {
-      E.page().elements = E.els().filter((x) => x !== el);
-      E.sel = [];
-    } else if (el && el.type === 'text') el.h = el.curve ? R.curveGeom(el).h : R.textHeight(el);
+    E.textArea = E.textAreaStyle = null;
+    if (page && el.type === 'text' && !el.text.trim()) {
+      page.elements = page.elements.filter((x) => x !== el);
+      E.sel = E.sel.filter((id) => id !== el.id);
+    } else if (page && el.type === 'text') fitText(el);
+    if (page && page !== E.page()) E.renderPage(E.d.pages.indexOf(page));
     E.changed();
   };
 
@@ -1008,9 +1253,17 @@
     const cx = (Math.max(r.left, w.left) + Math.min(r.right, w.right)) / 2, cy = (Math.max(r.top, w.top) + Math.min(r.bottom, w.bottom)) / 2;
     return { x: U.clamp((cx - r.left) / E.zoom, 0, E.d.width), y: U.clamp((cy - r.top) / E.zoom, 0, E.d.height) };
   };
+  // Guard for every edit: false (with a hint) when the current page is locked.
+  let lockHintT = 0;
+  E.canEdit = () => {
+    if (!E.page()?.locked) return true;
+    if (Date.now() - lockHintT > 2500) U.toast('This page is locked – unlock it to edit');
+    lockHintT = Date.now();
+    return false;
+  };
   E.add = (els, { center = true, edit = false } = {}) => {
-    if (!E.d) return;
-    if (E.page().locked) return U.toast('This page is locked');
+    if (!E.d || !E.canEdit()) return false;
+    E.finishText();
     els = Array.isArray(els) ? els : [els];
     if (center) {
       const box = E.unionBox(els);
@@ -1027,6 +1280,7 @@
     E.changed();
     A.EU.onSelectionChange?.();
     if (edit && els.length === 1) setTimeout(() => E.editText(els[0]), 20);
+    return true;
   };
   // Fit an element so it isn't larger than ~60% of the page.
   E.fitSize = (el, frac = 0.6) => {
@@ -1046,7 +1300,7 @@
     }[kind];
     const el = M.newText({ ...conf, w: Math.min(W * 0.8, conf.size * conf.text.length * 0.62) });
     el.h = R.textHeight(el);
-    E.add(el);
+    return E.add(el) ? el : null;
   };
   E.addShape = (shape, o = {}) => E.add(M.newShape(shape, { w: E.d.width * 0.25, h: E.d.width * 0.25 * (o.ratio || 1), fill: A.app.brand?.colors?.[0] || '#8c52ff', ...o }));
   E.addLine = (o = {}) => {
@@ -1062,44 +1316,46 @@
     return el;
   };
   E.deleteSel = () => {
-    const ids = new Set(E.selEls().filter((e) => !e.locked).map((e) => e.id));
-    if (!ids.size) return;
+    const els = E.selEls();
+    if (!els.length || !E.canEdit()) return;
+    const ids = new Set(els.filter((e) => !e.locked).map((e) => e.id));
+    if (!ids.size) return U.toast('Unlock the element to delete it');
     E.page().elements = E.els().filter((e) => !ids.has(e.id));
     E.d.comments = (E.d.comments || []).filter((c) => !ids.has(c.elId));
     E.sel = [];
     E.changed();
   };
   E.duplicate = () => {
+    if (!E.sel.length || !E.canEdit()) return;
+    E.finishText();
     const els = E.selEls();
     if (!els.length) return;
-    const gmap = {};
-    const clones = els.map((e) => {
-      const c = M.cloneElement(e, 20, 20);
-      if (c.groupId) c.groupId = gmap[c.groupId] ||= U.uid('g_');
-      return c;
-    });
+    const clones = M.cloneElements(els, 20, 20, E.page());
     E.page().elements.push(...clones);
     E.sel = clones.map((c) => c.id);
     E.changed();
+    A.EU.onSelectionChange?.();
   };
-  E.copy = () => {
+  // `native`: called from a copy/cut event, which puts the marker on the system clipboard itself.
+  E.copy = (native = false) => {
     const els = E.selEls();
     if (!els.length) return false;
-    E.clip = U.clone(els);
+    E.clip = M.cloneElements(els, 0, 0, E.page());
+    // until the user copies something else (or leaves the window), a paste here means these elements
+    E.clipFresh = true;
+    if (!native) navigator.clipboard?.writeText('atelier-elements').catch(() => {});
     return true;
   };
+  addEventListener('blur', () => (E.clipFresh = false));
   E.paste = () => {
-    if (!E.clip?.length) return;
-    const gmap = {};
-    const clones = E.clip.map((e) => {
-      const c = M.cloneElement(e, 24, 24);
-      if (c.groupId) c.groupId = gmap[c.groupId] ||= U.uid('g_');
-      return c;
-    });
+    if (!E.clip?.length || !E.canEdit()) return;
+    E.finishText();
+    const clones = M.cloneElements(E.clip, 24, 24);
     E.clip = clones.map((c) => U.clone(c));
     E.page().elements.push(...clones);
     E.sel = clones.map((c) => c.id);
     E.changed();
+    A.EU.onSelectionChange?.();
   };
   E.copyStyle = () => {
     const el = E.selEls()[0];
@@ -1110,7 +1366,7 @@
     U.toast('Style copied');
   };
   E.pasteStyle = () => {
-    if (!E.styleClip) return;
+    if (!E.styleClip || !E.canEdit()) return;
     for (const el of E.selEls()) {
       for (const k in E.styleClip) {
         if (['adj', 'duo'].includes(k) && el.type !== 'image') continue;
@@ -1118,40 +1374,50 @@
         if (['fill', 'radius'].includes(k) && !['shape', 'icon'].includes(el.type)) continue;
         el[k] = U.clone(E.styleClip[k]);
       }
-      if (el.type === 'text') el.h = R.textHeight(el);
+      if (el.type === 'text') fitText(el);
     }
     E.changed();
   };
   E.selectAll = () => E.select(E.els().filter((e) => !e.hidden).map((e) => e.id));
   E.group = () => {
     const els = E.selEls();
-    if (els.length < 2) return;
+    if (els.length < 2 || !E.canEdit()) return;
     const g = U.uid('g_');
     els.forEach((e) => (e.groupId = g));
     E.changed();
   };
   E.ungroup = () => {
+    if (!E.canEdit()) return;
     E.selEls().forEach((e) => delete e.groupId);
     E.enteredGroup = null;
     E.changed();
   };
+  // 'Unlock' is shown when the page or any selected element is locked, so it unlocks those; otherwise it locks.
   E.toggleLock = () => {
+    if (E.page().locked) {
+      E.page().locked = false;
+      return E.changed({ structure: true });
+    }
     const els = E.selEls();
-    const lock = !els.every((e) => e.locked);
+    const lock = !els.some((e) => e.locked);
     els.forEach((e) => (e.locked = lock));
     E.changed();
   };
   E.nudge = (dx, dy) => {
     const els = E.selEls().filter((e) => !e.locked);
-    if (!els.length) return;
+    if (!els.length || !E.canEdit()) return;
+    // a lone connector leaves its shapes, as when dragged
+    if (els.length === 1) E.bakeEnds(els[0], true);
     for (const el of els) {
       el.x += dx;
       el.y += dy;
       if (el.p1) { el.p1.x += dx; el.p1.y += dy; el.p2.x += dx; el.p2.y += dy; }
     }
-    E.changed();
+    E.changed({ commit: false });
+    E.commitSoon();
   };
   E.order = (how) => {
+    if (!E.canEdit()) return;
     const list = E.els();
     const ids = new Set(E.sel);
     const sel = list.filter((e) => ids.has(e.id)), rest = list.filter((e) => !ids.has(e.id));
@@ -1168,7 +1434,7 @@
   };
   E.align = (how) => {
     const els = E.selEls().filter((e) => !e.locked);
-    if (!els.length) return;
+    if (!els.length || !E.canEdit()) return;
     const ref = els.length > 1 ? E.unionBox(els) : { x: 0, y: 0, w: E.d.width, h: E.d.height };
     for (const el of els) {
       const b = E.bbox(el);
@@ -1186,6 +1452,7 @@
   };
   E.distribute = (axis) => {
     const els = E.selEls().filter((e) => !e.locked);
+    if (!E.canEdit()) return;
     if (els.length < 3) return U.toast('Select 3 or more elements to distribute');
     const k = axis === 'h' ? 'x' : 'y', s = axis === 'h' ? 'w' : 'h';
     const sorted = [...els].sort((a, b) => E.bbox(a)[k] - E.bbox(b)[k]);
@@ -1204,13 +1471,14 @@
   };
   E.setBackgroundFromImage = () => {
     const el = E.selEls()[0];
-    if (!el || el.type !== 'image') return;
-    E.page().bg = { ...(E.page().bg || {}), asset: el.asset, adj: el.adj };
+    if (!el || el.type !== 'image' || !E.canEdit()) return;
+    E.page().bg ={ ...(E.page().bg || {}), asset: el.asset, adj: el.adj };
     E.page().elements = E.els().filter((e) => e !== el);
     E.sel = [];
     E.changed();
   };
   E.flip = (axis) => {
+    if (!E.canEdit()) return;
     for (const el of E.selEls()) {
       if (axis === 'h') el.flipX = !el.flipX;
       else el.flipY = !el.flipY;
@@ -1242,27 +1510,44 @@
   };
 
   // ---------- keyboard & clipboard ----------
+  // Fields that take typed text; sliders, checkboxes and buttons leave the shortcuts working.
+  const typingIn = (el) => !!el && (el.tagName === 'TEXTAREA' || el.isContentEditable || (el.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'color', 'button', 'submit', 'reset', 'file'].includes(el.type)));
   E.onKey = (e) => {
     if (A.app.view !== 'editor' || !E.d) return;
     const ae = document.activeElement;
-    const typing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable);
-    if (typing) return;
-    if (document.querySelector('.modal-back') || A.Present?.active) return;
+    const k = e.key?.toLowerCase() || '';
     const mod = e.ctrlKey || e.metaKey;
-    const k = e.key.toLowerCase();
+    // selects and sliders keep their own keys (arrows, type-ahead); the other shortcuts still work there
+    const own = ae?.tagName === 'SELECT' ? !mod && !['delete', 'backspace', 'escape'].includes(k) : ae?.type === 'range' && k.startsWith('arrow');
+    if (typingIn(ae) || own) return;
+    if (document.querySelector('.modal-back') || A.Present?.active) return;
     const stop = () => e.preventDefault();
+    // the text editor is open but lost focus (e.g. to a toolbar button): keys go back to the text
+    if (E.editingId && !mod) {
+      if (k === 'escape') E.finishText();
+      else if (k !== 'tab' && !((k === 'enter' || k === ' ') && ae?.closest('button'))) E.textArea?.focus({ preventScroll: true });
+      return;
+    }
     if (mod) {
       if (k === 'z') { stop(); e.shiftKey ? E.redo() : E.undo(); }
       else if (k === 'y') { stop(); E.redo(); }
       else if (k === 'd') { stop(); E.duplicate(); }
       else if (k === 'g') { stop(); e.shiftKey ? E.ungroup() : E.group(); }
       else if (k === 'a') { stop(); E.selectAll(); }
-      else if (k === 's') { stop(); E.saveNow.flush(); U.toast('Saved', 'ok'); }
-      else if (k === 'c') { if (E.copy()) stop(); }
-      else if (k === 'x') { if (E.copy()) { stop(); E.deleteSel(); } }
+      else if (k === 's') { stop(); saveKey(); }
+      // Ctrl+C / Ctrl+X go on to the browser's copy/cut event (E.onCopyEvent), which marks the system clipboard;
+      // copying here too covers browsers that fire no copy event without a text selection (Safari)
+      else if (k === 'c') E.copy();
+      else if (k === 'x' && E.copy()) { const ids = E.sel.join(); setTimeout(() => E.sel.join() === ids && E.deleteSel()); }
       else if (k === 'b' || k === 'i' || k === 'u') {
-        const els = E.selEls().filter((x) => x.type === 'text' || (x.type === 'shape' && x.text));
-        if (els.length) { stop(); const key = { b: 'bold', i: 'italic', u: 'underline' }[k]; const v = !els[0][key]; els.forEach((x) => { x[key] = v; if (x.type === 'text') x.h = R.textHeight(x); }); E.changed(); }
+        const els = E.selEls().filter((x) => !x.locked && (x.type === 'text' || (x.type === 'shape' && x.text)));
+        if (els.length) {
+          stop();
+          if (!E.canEdit()) return;
+          const key = { b: 'bold', i: 'italic', u: 'underline' }[k], v = !els[0][key];
+          els.forEach((x) => { x[key] = v; if (x.type === 'text') fitText(x); });
+          E.changed();
+        }
       }
       else if (k === '=' || k === '+') { stop(); E.setZoom(E.zoom * 1.2); }
       else if (k === '-') { stop(); E.setZoom(E.zoom / 1.2); }
@@ -1302,27 +1587,25 @@
   };
   E.onCopyEvent = (e) => {
     if (A.app.view !== 'editor' || !E.d) return;
-    const ae = document.activeElement;
-    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
-    if (E.copy()) {
-      e.clipboardData.setData('text/plain', 'atelier-elements');
-      e.preventDefault();
-      if (e.type === 'cut') E.deleteSel();
-    }
+    E.clipFresh = false;
+    if (typingIn(document.activeElement) || document.querySelector('.modal-back') || !E.copy(true)) return;
+    e.clipboardData.setData('text/plain', 'atelier-elements');
+    e.preventDefault();
+    if (e.type === 'cut') E.deleteSel();
   };
   E.onPaste = async (e) => {
     if (A.app.view !== 'editor' || !E.d) return;
-    const ae = document.activeElement;
-    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
+    if (typingIn(document.activeElement)) return;
     const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
     const text = e.clipboardData?.getData('text/plain') || '';
     e.preventDefault();
+    if (E.clip && (E.clipFresh || text === 'atelier-elements' || (!text && !files.length))) return E.paste();
     if (files.length) {
       for (const f of files) E.addImageAsset(await S.addAsset(f, { name: f.name || 'pasted image' }));
       return;
     }
-    if ((text === 'atelier-elements' || !text) && E.clip) return E.paste();
-    if (text) {
+    // the marker without elements to go with it (another window, or after a reload) pastes nothing
+    if (text && text !== 'atelier-elements') {
       if (E.styleClip && false) return;
       const el = M.newText({ text: text.slice(0, 5000), w: E.d.width * 0.6, size: Math.max(12, Math.round(E.d.width / 30)) });
       el.h = R.textHeight(el);
@@ -1335,6 +1618,7 @@
     const files = [...(e.dataTransfer?.files || [])];
     for (const f of files) {
       if (f.type.startsWith('image/')) {
+        if (!E.canEdit()) return;
         const a = await S.addAsset(f, { name: f.name });
         const el = E.addImageAsset(a, { center: true });
         // drop onto a frame fills it
