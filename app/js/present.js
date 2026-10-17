@@ -1,0 +1,227 @@
+'use strict';
+// Present mode (fullscreen, transitions, presenter view, autoplay, recording) and
+// the in-editor animation preview.
+(function (A) {
+  const U = A.U, R = A.R, S = A.S, E = A.E, h = U.h;
+  const PR = (A.Present = { active: false, previewing: false });
+
+  // ---------- in-editor preview of the current page's animations ----------
+  PR.preview = () => {
+    PR.stopPreview();
+    if (!E.d) return;
+    PR.previewing = true;
+    A.EU.refreshTimeline();
+    const dur = E.page().duration || 5;
+    const t0 = performance.now();
+    const loop = () => {
+      if (!PR.previewing) return;
+      const t = (performance.now() - t0) / 1000;
+      if (t > dur) return PR.stopPreview();
+      E.previewT = t;
+      E.renderPage(E.pi);
+      PR.raf = requestAnimationFrame(loop);
+    };
+    loop();
+  };
+  PR.stopPreview = () => {
+    if (!PR.previewing) return;
+    PR.previewing = false;
+    cancelAnimationFrame(PR.raf);
+    E.previewT = null;
+    if (E.d) {
+      E.renderPage(E.pi);
+      A.EU.refreshTimeline();
+    }
+  };
+
+  // ---------- present ----------
+  PR.start = async (opts = {}) => {
+    if (!E.d) return;
+    PR.stopPreview();
+    E.finishText();
+    const d = E.d;
+    const pages = d.pages.filter((p) => !p.hidden);
+    if (!pages.length) return U.toast('All pages are hidden');
+    let idx = Math.max(0, pages.indexOf(E.page()));
+    if (opts.fromStart) idx = 0;
+    let autoplay = opts.autoplay ?? d.type === 'video';
+    let presenter = !!opts.presenter;
+    let t0 = performance.now();
+    let raf;
+    PR.active = true;
+    const stage = h('div.pr-stage');
+    const notes = h('div.pr-notes');
+    const next = h('div.pr-next');
+    const clock = h('div.pr-clock');
+    const side = h('div.pr-side', h('div.pr-label', 'Next'), next, h('div.pr-label', 'Notes'), notes, clock);
+    const counter = h('span.pr-count');
+    const autoBtn = h('button.pr-btn', { title: 'Autoplay', onclick: () => { autoplay = !autoplay; t0 = performance.now(); autoBtn.classList.toggle('on', autoplay); } }, U.ic('play', 18), ' Autoplay');
+    autoBtn.classList.toggle('on', autoplay);
+    const recBtn = h('button.pr-btn', { title: 'Record yourself presenting', onclick: () => (rec ? stopRec() : startRec()) }, U.ic('mic', 18), ' Record');
+    const bar = h('div.pr-bar',
+      h('button.pr-btn', { title: 'Previous (←)', onclick: () => go(idx - 1) }, U.ic('back', 18)),
+      counter,
+      h('button.pr-btn', { title: 'Next (→)', onclick: () => go(idx + 1) }, U.ic('fwd', 18)),
+      autoBtn,
+      h('button.pr-btn', { title: 'Presenter view (P)', onclick: () => { presenter = !presenter; root.classList.toggle('presenter', presenter); } }, U.ic('present', 18), ' Presenter view'),
+      recBtn,
+      h('button.pr-btn', { title: 'Full screen (F)', onclick: () => toggleFS() }, U.ic('fullscreen', 18)),
+      h('button.pr-btn', { title: 'Exit (Esc)', onclick: () => stop() }, U.ic('x', 18))
+    );
+    const root = h('div.present' + (presenter ? '.presenter' : ''), h('div.pr-main', stage), side, bar);
+    document.body.appendChild(root);
+    const started = Date.now();
+    let audio = null;
+    if (d.audio) {
+      try { audio = new Audio(S.assetURL(d.audio)); audio.loop = true; audio.play().catch(() => {}); } catch (e) {}
+    }
+    const toggleFS = () => (document.fullscreenElement ? document.exitFullscreen() : root.requestFullscreen?.().catch(() => {}));
+    if (opts.fullscreen !== false && !presenter) toggleFS();
+
+    let layer = null;
+    const svgFor = (page, t, idp, links = true) => R.pageSVG(d, page, { t, idp, links, width: d.width });
+    const mount = (dir) => {
+      const page = pages[idx];
+      const nl = h('div.pr-layer', { html: svgFor(page, 0, 'pr' + idx + '_') });
+      const tr = page.transition && page.transition !== 'none' && layer ? page.transition : null;
+      if (tr) nl.classList.add('tr-' + tr, dir < 0 ? 'rev' : 'fwd');
+      const old = layer;
+      stage.appendChild(nl);
+      layer = nl;
+      if (old) setTimeout(() => old.remove(), tr ? 650 : 0);
+      t0 = performance.now();
+      counter.textContent = `${idx + 1} / ${pages.length}`;
+      notes.textContent = page.notes || 'No notes for this page.';
+      next.innerHTML = pages[idx + 1] ? R.pageSVG(d, pages[idx + 1], { width: 320, idp: 'prn_' }) : '<div class="pr-end">End of presentation</div>';
+    };
+    const go = (i) => {
+      if (i < 0) return;
+      if (i >= pages.length) {
+        if (autoplay && d.type === 'video') return stop();
+        return;
+      }
+      const dir = i - idx;
+      idx = i;
+      mount(dir);
+    };
+    stage.addEventListener('click', (e) => {
+      const a = e.target.closest('a');
+      if (a) {
+        const href = a.getAttribute('href') || '';
+        const m = href.match(/^#(\d+)$/);
+        if (m) { e.preventDefault(); go(+m[1] - 1); }
+        return;
+      }
+      go(idx + 1);
+    });
+    const loop = () => {
+      const t = (performance.now() - t0) / 1000;
+      const page = pages[idx];
+      if (layer && animated(page)) layer.innerHTML = svgFor(page, t, 'pr' + idx + '_');
+      clock.textContent = '⏱ ' + fmtTime((Date.now() - started) / 1000);
+      if (autoplay && t >= (page.duration || 5)) go(idx + 1 < pages.length ? idx + 1 : (d.type === 'video' ? pages.length : 0));
+      raf = requestAnimationFrame(loop);
+    };
+    const onKey = (e) => {
+      if (['ArrowRight', 'ArrowDown', ' ', 'PageDown', 'Enter'].includes(e.key)) { e.preventDefault(); go(idx + 1); }
+      else if (['ArrowLeft', 'ArrowUp', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); go(idx - 1); }
+      else if (e.key === 'Escape') { if (!document.fullscreenElement) stop(); }
+      else if (e.key.toLowerCase() === 'f') toggleFS();
+      else if (e.key.toLowerCase() === 'p') { presenter = !presenter; root.classList.toggle('presenter', presenter); }
+      else if (e.key === 'Home') go(0);
+      else if (e.key === 'End') go(pages.length - 1);
+    };
+    document.addEventListener('keydown', onKey, true);
+    let idleT;
+    const onMove = () => { root.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => root.classList.add('idle'), 2500); };
+    root.addEventListener('pointermove', onMove);
+    onMove();
+    mount(1);
+    loop();
+
+    // ---------- recording (camera bubble + microphone) ----------
+    let rec = null;
+    async function startRec() {
+      let media;
+      try {
+        media = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 320 }, audio: true });
+      } catch (e) {
+        try { media = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e2) { return U.toast('Microphone/camera permission is needed to record', 'error'); }
+      }
+      const cam = h('video.pr-cam', { autoplay: true, muted: true, playsinline: true });
+      cam.srcObject = media;
+      cam.muted = true;
+      if (media.getVideoTracks().length) root.appendChild(cam);
+      const map = {};
+      for (const id of S.designAssetIds(d)) map[id] = await S.assetDataURL(id);
+      const fontCSS = await R.fontCSSFor(d);
+      const scale = Math.min(1, 1280 / d.width);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(d.width * scale);
+      canvas.height = Math.round(d.height * scale);
+      const g = canvas.getContext('2d');
+      const stream = canvas.captureStream(24);
+      media.getAudioTracks().forEach((t) => stream.addTrack(t));
+      const types = ['video/mp4;codecs=avc1', 'video/webm;codecs=vp9,opus', 'video/webm'];
+      const mime = types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
+      const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+      const chunks = [];
+      mr.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+      let running = true;
+      const draw = async () => {
+        while (running) {
+          const t = (performance.now() - t0) / 1000;
+          const svg = R.pageSVG(d, pages[idx], { t, asset: (id) => map[id] || '', fontCSS, idp: 'rc' });
+          try { await R.pageCanvas(d, pages[idx], scale, { svg, canvas, matte: '#fff' }); } catch (e) {}
+          if (cam.videoWidth) {
+            const s = canvas.height * 0.26, x = canvas.width - s - 20, y = canvas.height - s - 20;
+            g.save(); g.beginPath(); g.arc(x + s / 2, y + s / 2, s / 2, 0, Math.PI * 2); g.clip();
+            const vs = Math.min(cam.videoWidth, cam.videoHeight);
+            g.drawImage(cam, (cam.videoWidth - vs) / 2, (cam.videoHeight - vs) / 2, vs, vs, x, y, s, s);
+            g.restore();
+          }
+          await new Promise((r) => setTimeout(r, 30));
+        }
+      };
+      mr.start(500);
+      draw();
+      rec = { mr, media, cam, chunks, stopDraw: () => (running = false), mime };
+      recBtn.classList.add('rec');
+      recBtn.lastChild.textContent = ' Stop recording';
+      U.toast('Recording… press Stop recording when finished');
+    }
+    async function stopRec() {
+      if (!rec) return;
+      const r = rec;
+      rec = null;
+      r.stopDraw();
+      const done = new Promise((res) => (r.mr.onstop = res));
+      r.mr.stop();
+      await done;
+      r.media.getTracks().forEach((t) => t.stop());
+      r.cam.remove();
+      recBtn.classList.remove('rec');
+      recBtn.lastChild.textContent = ' Record';
+      const type = (r.mime || 'video/webm').split(';')[0];
+      U.download(new Blob(r.chunks, { type }), U.safeName(d.title) + '-recording.' + (type === 'video/mp4' ? 'mp4' : 'webm'));
+      U.toast('Recording saved', 'ok');
+    }
+
+    function stop() {
+      if (rec) stopRec();
+      cancelAnimationFrame(raf);
+      document.removeEventListener('keydown', onKey, true);
+      audio && audio.pause();
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      root.remove();
+      PR.active = false;
+      const real = d.pages.indexOf(pages[idx]);
+      if (real >= 0 && E.d === d) E.setPage(real);
+    }
+    PR.stop = stop;
+  };
+  const animated = (page) =>
+    (page.anim && page.anim !== 'none') ||
+    page.elements.some((e) => e.anim && ((e.anim.in && e.anim.in !== 'none') || (e.anim.emph && e.anim.emph !== 'none') || (e.anim.out && e.anim.out !== 'none') || e.anim.motion));
+  const fmtTime = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+})(window.A);
