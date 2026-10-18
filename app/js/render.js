@@ -496,22 +496,27 @@
     return `<g data-id="${esc(el.id)}" opacity="${n((el.opacity ?? 1) * st.o)}"${tr}><path d="${d}" fill="none" stroke="transparent" stroke-width="${n(Math.max(ctx.hit || 16, el.strokeWidth + 12))}"/><path d="${d}" fill="none" stroke="${color}" stroke-width="${n(el.strokeWidth)}" stroke-linecap="${el.dash === 'dotted' ? 'round' : 'butt'}" stroke-linejoin="round"${da ? ` stroke-dasharray="${da}"` : ''}${ms}${me}/></g>`;
   }
 
-  function imageInner(el, ctx) {
-    const url = ctx.asset(el.asset);
+  function imageInner(el, ctx, url = ctx.asset(el.asset), slot = '') {
     const c = el.crop || { x: 0, y: 0, w: 1, h: 1 };
     const nw = el.nw || 1000, nh = el.nh || 1000;
     const fid = did(ctx, 'if', el.id);
     const f = R.imageFilter(el.adj, fid, el.duo, nw / 1000);
     if (f) ctx.defs.push(f);
     let inner = `<svg width="${n(el.w)}" height="${n(el.h)}" viewBox="${n(c.x * nw)} ${n(c.y * nh)} ${n(c.w * nw)} ${n(c.h * nh)}" preserveAspectRatio="none"><image href="${esc(url)}" xlink:href="${esc(url)}" width="${n(nw)}" height="${n(nh)}" preserveAspectRatio="none"${f ? ` filter="url(#${fid})"` : ''}/></svg>`;
-    if (!url) inner = `<rect width="${n(el.w)}" height="${n(el.h)}" fill="#e5e5ea"/>`;
-    inner += vignette(el, ctx, el.w, el.h);
+    if (!url) inner = `<rect width="${n(el.w)}" height="${n(el.h)}" fill="${el.type === 'video' ? '#1c1c22' : '#e5e5ea'}"/>`;
+    inner += slot + vignette(el, ctx, el.w, el.h);
     if (el.radius) {
       const cid = did(ctx, 'ic', el.id);
       ctx.defs.push(`<clipPath id="${cid}"><path d="${rrect(el.w, el.h, el.radius)}"/></clipPath>`);
       inner = `<g clip-path="url(#${cid})">${inner}</g>`;
     }
     return inner;
+  }
+  // A clip shows the frame it is at (ctx.frame: exports, thumbnails), else its poster. A live render (editor, present
+  // mode) adds a slot over it that A.V.mount fills with the playing <video>.
+  function videoInner(el, ctx) {
+    const slot = ctx.live ? `<foreignObject width="${n(el.w)}" height="${n(el.h)}" data-vslot="${esc(el.id)}" pointer-events="none"><div xmlns="http://www.w3.org/1999/xhtml" style="position:relative;width:100%;height:100%;overflow:hidden"></div></foreignObject>` : '';
+    return imageInner(el, ctx, ctx.frame?.(el) || ctx.asset(el.poster), slot);
   }
   function vignette(el, ctx, w, h) {
     const v = el.adj && el.adj.vignette;
@@ -666,6 +671,7 @@
       case 'text': inner = R.textSVG(el, ctx, { x: 0, y: 0, w: el.w, h: el.h }, st.chars); break;
       case 'shape': inner = shapeInner(el, ctx, st); break;
       case 'image': inner = imageInner(el, ctx); break;
+      case 'video': inner = videoInner(el, ctx); break;
       case 'chart': inner = chartInner(el, ctx); break;
       case 'table': inner = tableInner(el, ctx); break;
       case 'draw': inner = drawInner(el, ctx); break;
@@ -708,11 +714,12 @@
   };
 
   let seq = 0;
-  // opts: { t, dur, asset, idp, transparent, links, fontCSS, width, height, skip:Set, hit }
+  // opts: { t, dur, asset, idp, transparent, links, fontCSS, width, height, skip:Set, hit, live, frame }
   // dur defaults to the page duration; null plays no exit animations (a slide that stays up until the presenter moves on).
   // hit: minimum width of a line's or drawing's invisible hit stroke, in page units (the editor keeps it a fixed size on screen).
+  // live: video clips get a slot for a playing <video>; frame(el): the image URL of the frame a clip shows.
   R.pageParts = (design, page, opts = {}) => {
-    const ctx = { asset: opts.asset || ((id) => A.S.assetURL(id)), idp: opts.idp || 'r' + (seq++).toString(36) + '_', t: opts.t, dur: opts.dur !== undefined ? opts.dur : page.duration || 5, page, defs: [], transparent: opts.transparent, links: opts.links, hit: opts.hit };
+    const ctx = { asset: opts.asset || ((id) => A.S.assetURL(id)), idp: opts.idp || 'r' + (seq++).toString(36) + '_', t: opts.t, dur: opts.dur !== undefined ? opts.dur : page.duration || 5, page, defs: [], transparent: opts.transparent, links: opts.links, hit: opts.hit, live: opts.live, frame: opts.frame };
     const bg = R.backgroundSVG(design, page, ctx);
     let vi = 0;
     // skipped (edited) text is drawn by the editor's textarea; a shape still draws its body
@@ -738,18 +745,20 @@
     for (const f of M.customFonts) if (used.has(f.name)) css += `@font-face{font-family:"${f.name.replace(/[\\"]/g, '\\$&')}";src:url(${await A.S.assetDataURL(f.asset)});}`;
     return css;
   };
+  // Video clips show the frame at opts.t (their first frame when it is null), grabbed at opts.scale.
   R.standaloneSVG = async (design, page, opts = {}) => {
     const ids = A.S.designAssetIds({ pages: [page] });
     const map = {};
     for (const id of ids) map[id] = await A.S.assetDataURL(id);
-    return R.pageSVG(design, page, { ...opts, asset: (id) => map[id] || '', fontCSS: await R.fontCSSFor(design) });
+    const frame = opts.frame || (await A.V?.frames(page, opts.t, opts.scale));
+    return R.pageSVG(design, page, { ...opts, frame, asset: (id) => map[id] || '', fontCSS: await R.fontCSSFor(design) });
   };
   // Rasterise a page to a canvas.
   R.pageCanvas = async (design, page, scale = 1, opts = {}) => {
     const W = Math.max(1, Math.round(design.width * scale)), H = Math.max(1, Math.round(design.height * scale));
     // the browser's canvas limits; past them drawing and toBlob fail without saying why
     if (W * H > 268435456 || Math.max(W, H) > 32767) throw new Error('Export is too large – choose a smaller size');
-    const svg = opts.svg || (await R.standaloneSVG(design, page, opts));
+    const svg = opts.svg || (await R.standaloneSVG(design, page, { scale, ...opts }));
     const blob = new Blob([svg], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(blob);
     try {

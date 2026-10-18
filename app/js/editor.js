@@ -48,6 +48,7 @@
     E.flushCommit();
     E.setSpace(false);
     clearInterval(E.versionTimer);
+    A.V.release('e');
     // an untouched design keeps its 'last edited' time (it is only saved for a missing card preview)
     if (E.dirty || !E.d.thumb) await E.save();
     await E.snapshot();
@@ -246,11 +247,13 @@
     const W = E.d.width, H = E.d.height, z = E.zoom;
     const t = opts.t ?? (i === E.pi ? E.previewT : null);
     // lines and drawings stay as easy to hit at any zoom (a finger needs more room)
-    const parts = R.pageParts(E.d, page, { idp: 'p' + i + '_', t, skip: E.editingId ? new Set([E.editingId]) : null, hit: (coarse.matches ? 36 : 16) / z });
+    const parts = R.pageParts(E.d, page, { idp: 'p' + i + '_', t, skip: E.editingId ? new Set([E.editingId]) : null, hit: (coarse.matches ? 36 : 16) / z, live: true });
     b.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     b.svg.setAttribute('width', W * z);
     b.svg.setAttribute('height', H * z);
     b.svg.innerHTML = `<defs>${parts.defs}</defs>${parts.bg}${parts.els}`;
+    // video clips show the playhead's frame, and play along with a preview
+    A.V.mount(b.svg, page, t ?? A.V.local(i), { playing: A.Present.previewing && i === E.pi });
     b.frame.style.width = W * z + 'px';
     b.frame.style.height = H * z + 'px';
     b.el.classList.toggle('active', i === E.pi);
@@ -546,6 +549,7 @@
       });
       sb.appendChild(U.h('div.rot-wrap', rh, mh));
     }
+    if (single?.type === 'video' && E.editingId == null && !E.dragging) A.V.controls(sb, single);
     b.overlay.appendChild(sb);
     miniMenu(b, E.unionBox(els), locked);
   };
@@ -727,6 +731,7 @@
     else if (el.type === 'text' || el.type === 'shape') E.editText(el);
     else if (el.type === 'table') A.EU.openPanel('table');
     else if (el.type === 'chart') A.EU.openPanel('chart');
+    else if (el.type === 'video') A.EU.openPanel('video');
   };
   E.onContext = (e, i, fromButton) => {
     e.preventDefault();
@@ -884,7 +889,7 @@
   };
   // A finger pans a page zoomed in past fit instead of drawing a selection box (unless Select mode is on).
   E.touchPans = () => !E.selectMode && E.zoom > E.fitZoom() * 1.01;
-  let panTip = false, panFinger = null;
+  let panTip = false, panFinger = null, spacePanned = false;
   // Capture-phase pointerdown anywhere on the canvas: Space or the middle button pans (over elements and handles too),
   // and a double tap on empty canvas zooms to fit.
   let lastTap = null;
@@ -894,6 +899,7 @@
     if (e.button === 1 || (e.button === 0 && E.spaceDown && e.pointerType !== 'touch')) {
       e.preventDefault();
       e.stopImmediatePropagation();
+      spacePanned = true;
       return E.startPan(e);
     }
     if (e.pointerType !== 'touch' || !e.isPrimary || E.tool) return (lastTap = null);
@@ -918,14 +924,19 @@
   };
   // Hold Space to pan with the mouse (a hand cursor shows while it is held).
   E.setSpace = (on) => {
+    if (on && !E.spaceDown) spacePanned = false;
     E.spaceDown = on;
     document.body.classList.toggle('tool-pan', on);
     if (on && E.hoverBox) E.hoverBox.style.display = 'none';
   };
+  // Space let go without panning plays the timeline of a strip (videos, presentations) from the playhead, or
+  // pauses it; a focused control keeps its own Space
   E.onKeyUp = (e) => {
     if (!E.spaceDown || (e && e.code !== 'Space' && e.key !== ' ')) return;
     e?.preventDefault();
     E.setSpace(false);
+    if (!e || spacePanned || E.layout() !== 'strip' || document.activeElement?.closest?.('button, a, input, summary, [role="slider"], [role="button"], [role="checkbox"]')) return;
+    A.Present.previewing ? A.Present.stopPreview() : A.EU.play();
   };
 
   // Move with smart guides. Alt/Option-drag copies.
@@ -1141,7 +1152,7 @@
     );
   }
 
-  const PROPORTIONAL = new Set(['image', 'icon', 'emoji', 'text']);
+  const PROPORTIONAL = new Set(['image', 'video', 'icon', 'emoji', 'text']);
   // Resizes snap the sides that move (Ctrl/Cmd: not this time) and Alt/Option resizes from the centre.
   // Several elements scale as one box: corners keep its proportions unless Shift is held, sides stretch it.
   // handles preventDefault their pointerdown, so a typed panel value is committed here, before the drag starts from it
@@ -1212,7 +1223,7 @@
               nh = o.h * k;
             }
           }
-          if (el.type === 'image' && !corner) {
+          if ((el.type === 'image' || el.type === 'video') && !corner) {
             // side handles crop the image (a flipped picture is cropped on its mirrored side)
             const c = { ...o.crop };
             const pxPerX = o.w / c.w, pxPerY = o.h / c.h;
@@ -1309,7 +1320,7 @@
         el.p2 = { x: ax + (o.p2.x - ax) * kx, y: ay + (o.p2.y - ay) * ky };
         return M.syncLineBox(el);
       }
-      const keep = uni || o.type === 'image' || o.type === 'emoji' || (o.type === 'text' && o.curve);
+      const keep = uni || o.type === 'image' || o.type === 'video' || o.type === 'emoji' || (o.type === 'text' && o.curve);
       // a turned element stretches along its own sides (exactly so at right angles)
       const t = ((o.rot || 0) * Math.PI) / 180, c = Math.abs(Math.cos(t)), s = Math.abs(Math.sin(t)), k = uni ? kx : Math.min(kx, ky);
       el.w = Math.max(1, o.w * (keep ? k : Math.hypot(kx * c, ky * s)));
@@ -1989,7 +2000,8 @@
   // Where the next add lands instead of the middle of the view: { i: page index, x, y } in page px (a drop).
   // An add placed by its own coordinates (a photo grid) only takes the page.
   E.dropAt = null;
-  E.add = (els, { center = true, edit = false } = {}) => {
+  // layer: the layer index to insert at (default: on top)
+  E.add = (els, { center = true, edit = false, layer = null } = {}) => {
     const at = E.dropAt, ev = window.event, ae = document.activeElement;
     E.dropAt = null;
     if (!E.d) return false;
@@ -2003,7 +2015,7 @@
       // repeated adds step down and right instead of hiding each other
       for (let k = 0; !at && k < 10 && els.some(taken); k++) E.moveEls(els, 20, 20);
     }
-    E.page().elements.push(...els);
+    E.page().elements.splice(layer ?? E.page().elements.length, 0, ...els);
     E.sel = els.map((e) => e.id);
     E.changed();
     A.EU.onSelectionChange?.();
@@ -2653,9 +2665,7 @@
         if (frame && !filled && E.page().elements.includes(frame)) E.fillFrame((filled = frame), a);
         else els.push(imageEl(a, 0.6, els.length * 20));
       } else if (f.type.startsWith('audio/')) {
-        const a = await S.addAsset(f, { name: f.name });
-        E.d.audio = a.id;
-        E.changed({ all: true });
+        A.V.setTrack((await S.addAsset(f, { name: f.name })).id);
         U.toast('Audio added to the design');
       } else await A.app.importFile(f, { toEditor: true });
     }

@@ -244,8 +244,11 @@
       const img = h('img', { src: S.assetURL(id) || null, alt, draggable: 'false' });
       S.ensureAssetURLs([id]).then(() => (img.src = S.assetURL(id)));
       const add = async () => { const a = await S.get('assets', id); if (a) E.addImageAsset(a, { frac }); };
+      const item = { add, asset: { id } };
+      // by the time it is dropped its size is known, for a frame it fills
+      S.get('assets', id).then((a) => a && (item.asset = a));
       // (added once loaded, so a mouse click lets go of the focus here: Space can't add it again)
-      return EU.draggable(h('button.img-item', { onclick: (e) => { if (e.detail) e.currentTarget.blur(); add(); } }, img), { add, asset: { id } });
+      return EU.draggable(h('button.img-item', { onclick: (e) => { if (e.detail) e.currentTarget.blur(); add(); } }, img), item);
     };
     if (b.logos?.length) body.append(section('Logos', h('div.img-grid', b.logos.map((id) => brandImg(id, 'logo', 0.3)))));
     if (b.colors?.length) body.append(section('Brand colours', h('p.muted.small', 'Click to apply to the selection.'), h('div.cp-grid', b.colors.map((c) => h('button.color-sw', { style: { background: c }, title: c, onclick: () => applyColor(c) })))));
@@ -270,9 +273,9 @@
     const body = h('div');
     const modeHint = { background: 'Click an image to set it as the page background.', replace: 'Click an image to replace the selected photo.', frame: 'Click an image to place it in the selected frame.', audio: 'Upload or pick audio to use as the soundtrack.' }[mode];
     if (modeHint) body.append(h('div.notice', modeHint, h('button.link', { onclick: () => EU.openPanel('uploads') }, 'Cancel')));
-    body.append(h('button.btn.primary.full', { onclick: () => upload(mode) }, U.ic('upload', 16), ' Upload files'), h('p.muted.small', 'Images, SVG, audio, fonts (.ttf .otf .woff) and Atelier design files. Drag & drop onto the page also works.'));
+    body.append(h('button.btn.primary.full', { onclick: () => upload(mode) }, U.ic('upload', 16), ' Upload files'), h('p.muted.small', 'Images, videos (MP4, WebM), SVG, audio, fonts (.ttf .otf .woff) and Atelier design files. Drag & drop onto the page also works.'));
     const tab = mode === 'audio' ? 'audio' : state.uploadsTab;
-    body.append(tabs([['images', 'Images'], ['audio', 'Audio'], ['fonts', 'Fonts']], tab, (t) => { state.uploadsTab = t; EU.openPanel('uploads', mode === 'audio' && t !== 'audio' ? null : mode); }));
+    body.append(tabs([['images', 'Images'], ['videos', 'Videos'], ['audio', 'Audio'], ['fonts', 'Fonts']], tab, (t) => { state.uploadsTab = t; EU.openPanel('uploads', mode === 'audio' && t !== 'audio' ? null : mode); }));
     const list = h('div');
     body.append(list);
     (async () => {
@@ -286,10 +289,19 @@
           btn.addEventListener('contextmenu', (e) => { e.preventDefault(); U.menu({ x: e.clientX, y: e.clientY }, [{ label: 'Delete upload', icon: 'trash', danger: true, onClick: async () => { a.hidden = true; await S.put('assets', a); EU.renderPanel(); } }]); });
           return btn;
         })));
+      } else if (tab === 'videos') {
+        const vids = await S.listAssets('video');
+        await S.ensureAssetURLs(vids.map((a) => a.poster));
+        if (!vids.length) list.append(h('p.muted', 'No videos yet. Upload MP4 or WebM clips, or drop them on the page.'));
+        list.append(h('div.img-grid', vids.map((a) => {
+          const btn = h('button.img-item.vid-item', { title: a.name, onclick: () => A.V.addToPage(a) }, S.assetURL(a.poster) ? h('img', { src: S.assetURL(a.poster), alt: a.name, loading: 'lazy' }) : U.ic('video', 28), h('span.vid-dur', A.V.fmt(a.duration || 0)));
+          btn.addEventListener('contextmenu', (e) => { e.preventDefault(); U.menu({ x: e.clientX, y: e.clientY }, [{ label: 'Delete upload', icon: 'trash', danger: true, onClick: async () => { a.hidden = true; await S.put('assets', a); EU.renderPanel(); } }]); });
+          return btn;
+        })));
       } else if (tab === 'audio') {
         const auds = await S.listAssets('audio');
         if (!auds.length) list.append(h('p.muted', 'No audio yet.'));
-        for (const a of auds) list.append(h('div.audio-item', U.ic('music', 16), h('span.flex1', a.name), h('button.btn.sm' + (E.d.audio === a.id ? '.primary' : ''), { onclick: () => { E.d.audio = E.d.audio === a.id ? null : a.id; E.changed({ all: true }); EU.renderPanel(); } }, E.d.audio === a.id ? 'In use' : 'Use')));
+        for (const a of auds) list.append(h('div.audio-item', U.ic('music', 16), h('span.flex1', a.name), h('button.btn.sm' + (E.d.audio === a.id ? '.primary' : ''), { onclick: () => { A.V.setTrack(E.d.audio === a.id ? null : a.id); EU.renderPanel(); } }, E.d.audio === a.id ? 'In use' : 'Use')));
       } else {
         const fonts = await S.listAssets('font');
         if (!fonts.length) list.append(h('p.muted', 'Upload .ttf, .otf, .woff or .woff2 files to use your own fonts.'));
@@ -301,10 +313,11 @@
   async function upload(mode) {
     // background, replace and frame take one photo and use it like a clicked upload
     const pick = mode && mode !== 'audio';
-    const files = await U.pickFiles(pick ? 'image/*,.svg' : 'image/*,audio/*,.ttf,.otf,.woff,.woff2,.json,.svg', !pick);
+    const files = await U.pickFiles(pick ? 'image/*,.svg' : 'image/*,video/*,audio/*,.ttf,.otf,.woff,.woff2,.json,.svg', !pick);
     for (const f of files) {
       const a = await A.app.importFile(f, { toEditor: !pick });
       if (pick && a?.kind === 'image') useImage(a, mode);
+      if (a?.kind === 'video') state.uploadsTab = 'videos';
     }
     EU.renderPanel();
   }
@@ -642,7 +655,7 @@
     };
     // the ratio lock lasts while the selection does (the panel is rebuilt after edits)
     const lockKey = E.d.id + ':' + sel;
-    const lock = h('input', { type: 'checkbox', checked: state.posLock?.key === lockKey ? state.posLock.on : els.length === 1 && ['image', 'icon', 'emoji'].includes(els[0].type) });
+    const lock = h('input', { type: 'checkbox', checked: state.posLock?.key === lockKey ? state.posLock.on : els.length === 1 && ['image', 'video', 'icon', 'emoji'].includes(els[0].type) });
     lock.addEventListener('change', () => (state.posLock = { key: lockKey, on: lock.checked }));
     // a locked element or page refuses the value, and the field shows the real one again; arrow keys step it (one undo step per burst)
     const apply = (key, base, inp, step = 0) => {
@@ -1040,12 +1053,13 @@
   P.crop = () => {
     const el = sel1();
     if (E.isPhotoFrame(el)) return frameCrop(el);
-    if (!el || el.type !== 'image') return { title: 'Crop', body: h('p.muted', 'Select a photo to crop it.') };
+    const croppable = (x) => x.type === 'image' || x.type === 'video';
+    if (!el || !croppable(el)) return { title: 'Crop', body: h('p.muted', 'Select a photo or video to crop it.') };
     const c = el.crop || { x: 0, y: 0, w: 1, h: 1 };
     const setRatio = (r) => {
       // r = width/height of the frame; keep the crop centred (each photo from its own natural size)
       EU.apply((x) => {
-        if (x.type !== 'image') return;
+        if (!croppable(x)) return;
         const natural = x.nw / x.nh;
         let cw = 1, ch = 1;
         if (r) { if (r > natural) ch = natural / r; else cw = r / natural; }
@@ -1057,19 +1071,19 @@
     const ratios = [['Original', null], ['1:1', 1], ['4:3', 4 / 3], ['3:4', 3 / 4], ['16:9', 16 / 9], ['9:16', 9 / 16], ['3:2', 3 / 2]];
     const zoom = Math.round(100 / Math.max(c.w, c.h));
     const body = h('div',
-      h('p.muted.small', 'Tip: double-click the photo to crop it on the page, or drag its side handles.'),
+      h('p.muted.small', el.type === 'video' ? 'Tip: drag the side handles on the video to crop freely.' : 'Tip: double-click the photo to crop it on the page, or drag its side handles.'),
       section('Aspect ratio', h('div.chip-row', ratios.map(([l, r]) => h('button.chip', { onclick: () => setRatio(r) }, l)))),
       section('Zoom & position',
         EU.slider('Zoom', zoom, 100, 400, 1, (v, f) => EU.apply((x) => {
-          if (x.type !== 'image') return;
+          if (!croppable(x)) return;
           const k = 100 / v, aspect = x.crop.w / x.crop.h;
           let w = Math.min(1, k * (aspect >= 1 ? 1 : aspect)), hh = w / aspect;
           if (hh > 1) { hh = 1; w = aspect; }
           const cx = x.crop.x + x.crop.w / 2, cy = x.crop.y + x.crop.h / 2;
           x.crop = { w, h: hh, x: U.clamp(cx - w / 2, 0, 1 - w), y: U.clamp(cy - hh / 2, 0, 1 - hh) };
         }, f), (v) => v + '%'),
-        EU.slider('Horizontal', Math.round(c.w >= 1 ? 50 : (c.x / (1 - c.w)) * 100), 0, 100, 1, (v, f) => EU.apply((x) => x.type === 'image' && (x.crop = { ...x.crop, x: (1 - x.crop.w) * (v / 100) }), f)),
-        EU.slider('Vertical', Math.round(c.h >= 1 ? 50 : (c.y / (1 - c.h)) * 100), 0, 100, 1, (v, f) => EU.apply((x) => x.type === 'image' && (x.crop = { ...x.crop, y: (1 - x.crop.h) * (v / 100) }), f))
+        EU.slider('Horizontal', Math.round(c.w >= 1 ? 50 : (c.x / (1 - c.w)) * 100), 0, 100, 1, (v, f) => EU.apply((x) => croppable(x) && (x.crop = { ...x.crop, x: (1 - x.crop.w) * (v / 100) }), f)),
+        EU.slider('Vertical', Math.round(c.h >= 1 ? 50 : (c.y / (1 - c.h)) * 100), 0, 100, 1, (v, f) => EU.apply((x) => croppable(x) && (x.crop = { ...x.crop, y: (1 - x.crop.h) * (v / 100) }), f))
       ),
       rotateFlip(),
       h('button.btn.full', { onclick: () => { setRatio(null); } }, 'Reset crop')
@@ -1102,6 +1116,145 @@
     );
     return { title: 'Crop', body };
   }
+
+  // ---------- Video ----------
+  // Trim (a filmstrip with in/out handles and the frame at the handle), sound, speed, timing on the page and framing.
+  // A page whose length was set by its clips follows them as they change.
+  P.video = () => {
+    const el = sel1();
+    if (!el || el.type !== 'video') return { title: 'Video', body: h('p.muted', 'Select a video clip to edit it.') };
+    const V = A.V, page = E.page(), src = el.dur || V.span(el).outT, ar = (el.nw || 16) / (el.nh || 9);
+    const set = (fn, fin = true) => {
+      const pg = E.page(), was = V.fitted(pg);
+      EU.apply((x) => {
+        if (x.type !== 'video') return;
+        fn(x);
+        if (pg.duration === was) V.fitPage(pg);
+      }, fin);
+      if (fin) { EU.refreshTimeline(); info(); }
+    };
+    // a burst of key presses on a trim handle is one undo step
+    const nudge = (fn) => { set(fn, false); E.commitSoon(); EU.refreshTimeline(); info(); };
+
+    // ---- trim ----
+    const ph = Math.round(Math.min(200, 360 / ar)), pw = Math.max(2, Math.round(ph * ar));
+    const img = h('img.trim-frame', { alt: 'Frame at the trim handle', width: pw, height: ph, src: S.assetURL(el.poster) || null });
+    let want = null, busy = false;
+    const preview = (t) => {
+      want = t;
+      if (busy) return;
+      busy = true;
+      (async () => {
+        while (want != null) {
+          const tt = want;
+          want = null;
+          const u = await V.grab(el.asset, tt, pw, ph, 'panel');
+          if (u && img.isConnected) img.src = u;
+        }
+        busy = false;
+      })();
+    };
+    const strip = h('div.trim-strip');
+    V.strip(el.asset, src, ar).then((u) => u && (strip.style.backgroundImage = `url("${u}")`));
+    const keep = h('div.trim-keep');
+    const handle = (which) => h('div.trim-h.' + which, { role: 'slider', tabindex: 0, 'aria-label': which === 'in' ? 'Trim start' : 'Trim end', 'aria-valuemin': 0, 'aria-valuemax': U.round(src, 2), title: (which === 'in' ? 'Start' : 'End') + ' of the clip – drag, or use the arrow keys' });
+    const hin = handle('in'), hout = handle('out');
+    const bar = h('div.trim-bar', strip, keep, hin, hout);
+    const fIn = h('input.num', { type: 'number', min: 0, step: 0.1, 'aria-label': 'Trim start (s)' });
+    const fOut = h('input.num', { type: 'number', min: 0, step: 0.1, 'aria-label': 'Trim end (s)' });
+    const show = () => {
+      const s = V.span(el);
+      hin.style.left = (s.inT / src) * 100 + '%';
+      hout.style.left = (s.outT / src) * 100 + '%';
+      Object.assign(keep.style, { left: (s.inT / src) * 100 + '%', width: ((s.outT - s.inT) / src) * 100 + '%' });
+      hin.setAttribute('aria-valuenow', U.round(s.inT, 2));
+      hout.setAttribute('aria-valuenow', U.round(s.outT, 2));
+      hin.setAttribute('aria-valuetext', V.fmt(s.inT));
+      hout.setAttribute('aria-valuetext', V.fmt(s.outT));
+      if (document.activeElement !== fIn) fIn.value = U.round(s.inT, 2);
+      if (document.activeElement !== fOut) fOut.value = U.round(s.outT, 2);
+    };
+    // the kept part is at least 0.1 s
+    const trimTo = (which, t) => (x) => {
+      const s = V.span(x);
+      if (which === 'in') x.trimIn = U.round(U.clamp(t, 0, s.outT - 0.1), 3);
+      else x.trimOut = U.round(U.clamp(t, s.inT + 0.1, src), 3);
+    };
+    for (const [hd, which] of [[hin, 'in'], [hout, 'out']]) {
+      hd.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        hd.focus();
+        hd.setPointerCapture?.(e.pointerId);
+        let moved = false;
+        const at = (ev) => { const r = bar.getBoundingClientRect(); return U.clamp((ev.clientX - r.left) / r.width, 0, 1) * src; };
+        const mv = (ev) => {
+          if (ev.pointerId !== e.pointerId) return;
+          moved = true;
+          set(trimTo(which, at(ev)), false);
+          show();
+          preview(which === 'in' ? V.span(el).inT : V.span(el).outT - 1e-3);
+        };
+        const up = (ev) => {
+          if (ev.pointerId !== e.pointerId) return;
+          removeEventListener('pointermove', mv); removeEventListener('pointerup', up); removeEventListener('pointercancel', up);
+          if (moved) set(() => {}, true);
+          show();
+        };
+        addEventListener('pointermove', mv);
+        addEventListener('pointerup', up);
+        addEventListener('pointercancel', up);
+      });
+      hd.addEventListener('keydown', (e) => {
+        const s = V.span(el), cur = which === 'in' ? s.inT : s.outT, k = e.shiftKey ? 1 : 0.1;
+        const to = { ArrowLeft: cur - k, ArrowDown: cur - k, ArrowRight: cur + k, ArrowUp: cur + k, Home: 0, End: src }[e.key];
+        if (to == null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        nudge(trimTo(which, to));
+        show();
+        preview(which === 'in' ? V.span(el).inT : V.span(el).outT - 1e-3);
+      });
+      hd.addEventListener('focus', () => preview(which === 'in' ? V.span(el).inT : V.span(el).outT - 1e-3));
+    }
+    fIn.addEventListener('change', () => { set(trimTo('in', +fIn.value || 0)); show(); preview(V.span(el).inT); });
+    fOut.addEventListener('change', () => { set(trimTo('out', +fOut.value || src)); show(); preview(V.span(el).outT - 1e-3); });
+    show();
+    preview(V.span(el).inT);
+
+    // ---- sound, speed and timing ----
+    const mute = h('input', { type: 'checkbox', checked: !!el.muted });
+    mute.addEventListener('change', () => set((x) => (x.muted = mute.checked)));
+    const loop = h('input', { type: 'checkbox', checked: !!el.loop });
+    loop.addEventListener('change', () => set((x) => (x.loop = loop.checked)));
+    const speeds = [0.25, 0.5, 1, 1.5, 2, 4];
+    const speedSeg = h('div.seg', { role: 'group', 'aria-label': 'Speed' }, speeds.map((v) => h('button.seg-btn' + ((el.speed || 1) === v ? '.on' : ''), { 'aria-pressed': String((el.speed || 1) === v), onclick: () => { set((x) => (x.speed = v)); EU.renderPanel(); } }, v + '×')));
+    const infoEl = h('p.muted.small.vid-info');
+    const info = () => {
+      const s = V.span(el), end = V.end(el);
+      infoEl.textContent = `Plays ${V.fmt(V.len(el))} of the ${V.fmt(src)} clip, from ${V.fmt(s.begin)} to ${el.loop ? 'the end of the page' : V.fmt(Math.min(end, page.duration || 5))} on this page (${page.duration || 5}s).`;
+    };
+    info();
+    const body = h('div',
+      section('Trim', h('div.trim-prev', img), bar, h('div.row.trim-fields', h('label.mini-label', 'Start ', fIn), h('label.mini-label', 'End ', fOut), h('span.muted.small', 's'))),
+      section('Sound',
+        h('label.check', mute, ' Mute this clip'),
+        EU.slider('Volume', Math.round((el.volume ?? 1) * 100), 0, 100, 1, (v, f) => set((x) => (x.volume = v / 100), f), (v) => v + '%')),
+      section('Playback',
+        h('label.mini-label', 'Speed'), speedSeg,
+        h('label.check', loop, ' Loop until the page ends'),
+        EU.slider('Starts at (s into the page)', U.round(V.span(el).begin, 1), 0, Math.max(1, page.duration || 5), 0.1, (v, f) => set((x) => (x.begin = v), f)),
+        infoEl,
+        h('button.btn.full', { onclick: () => { if (!E.canEdit()) return; V.fitPage(E.page()); E.changed(); EU.refreshTimeline(); info(); } }, U.ic('timer', 16), ' Make the page as long as its clips')),
+      section('Framing',
+        h('div.row',
+          h('button.btn.sm', { onclick: () => set((x) => V.cover(x, E.d.width, E.d.height)) }, U.ic('fullscreen', 14), ' Fill page'),
+          h('button.btn.sm', { onclick: () => set((x) => { const k = Math.min(E.d.width / x.nw, E.d.height / x.nh); Object.assign(x, { crop: { x: 0, y: 0, w: 1, h: 1 }, w: x.nw * k, h: x.nh * k, x: (E.d.width - x.nw * k) / 2, y: (E.d.height - x.nh * k) / 2, rot: 0 }); }) }, U.ic('resize', 14), ' Fit page'),
+          h('button.btn.sm', { onclick: () => EU.openPanel('crop') }, U.ic('crop', 14), ' Crop')),
+        EU.slider('Corner rounding', el.radius || 0, 0, Math.round(Math.min(el.w, el.h) / 2), 1, (v, f) => set((x) => (x.radius = v), f)))
+    );
+    return { title: 'Video', body };
+  };
 
   // ---------- Chart data ----------
   P.chart = () => {

@@ -91,7 +91,7 @@
   }
   // Callers that redraw their own view pass reroute: false (re-routing resets e.g. the Projects tab).
   async function importFiles({ reroute = true } = {}) {
-    const files = await U.pickFiles('.json,image/*,audio/*,.ttf,.otf,.woff,.woff2,.svg');
+    const files = await U.pickFiles('.json,image/*,video/*,audio/*,.ttf,.otf,.woff,.woff2,.svg');
     for (const f of files) await A.app.importFile(f);
     if (reroute && A.app.view === 'home') A.app.route();
   }
@@ -207,11 +207,11 @@
       main.append(h('div.page-title', h('h1', 'Projects'), h('button.btn', { onclick: async () => { const n = await U.prompt('Folder name'); if (n) { await S.put('folders', { id: U.uid('f_'), name: n, createdAt: Date.now() }); state.tab = 'folders'; render(); } } }, U.ic('plus', 16), ' New folder')), tabs);
       if (state.tab === 'uploads') {
         const assets = await S.listAssets();
-        await S.ensureAssetURLs(assets.filter((a) => a.kind === 'image').map((a) => a.id));
+        await S.ensureAssetURLs(assets.map((a) => (a.kind === 'video' ? a.poster : a.kind === 'image' ? a.id : null)));
         main.append(h('div.row', h('button.btn.primary', { onclick: async () => { await importFiles({ reroute: false }); render(); } }, U.ic('upload', 16), ' Upload')));
         const grid = h('div.upload-grid');
         if (!assets.length) grid.append(h('p.muted', 'No uploads yet.'));
-        assets.forEach((a) => grid.append(h('div.upload-card', a.kind === 'image' ? h('img', { src: S.assetURL(a.id), alt: a.name }) : h('div.file-ic', U.ic(a.kind === 'audio' ? 'music' : a.kind === 'font' ? 'text' : 'file', 32)), h('span.small', a.name), h('button.icon-btn.sm', { title: 'Delete', onclick: async () => { if (await U.confirm('Delete this upload? Designs using it will show a blank placeholder.', 'Delete', true)) { await S.del('assets', a.id); await dropFromBrand(a.id); render(); } } }, U.ic('trash', 14)))));
+        assets.forEach((a) => grid.append(h('div.upload-card', a.kind === 'image' || (a.kind === 'video' && S.assetURL(a.poster)) ? h('img', { src: S.assetURL(a.kind === 'video' ? a.poster : a.id), alt: a.name }) : h('div.file-ic', U.ic(a.kind === 'audio' ? 'music' : a.kind === 'font' ? 'text' : a.kind === 'video' ? 'video' : 'file', 32)), h('span.small', a.name), h('button.icon-btn.sm', { title: 'Delete', onclick: async () => { if (await U.confirm('Delete this upload? Designs using it will show a blank placeholder.', 'Delete', true)) { await S.del('assets', a.id); if (a.poster) await S.del('assets', a.poster); await dropFromBrand(a.id); render(); } } }, U.ic('trash', 14)))));
         main.append(grid);
         return;
       }
@@ -432,7 +432,7 @@
       ['Arrow keys', 'Nudge 1px'], ['Shift + arrows', 'Nudge 10px'], ['Ctrl/⌘ + drag', 'Move or resize without snapping'], ['Enter', 'Edit selected text / crop selected photo'], ['Delete', 'Delete selection'], ['Esc', 'Deselect / exit tool'],
       ['Cropping: drag, arrows, + / −', 'Move / zoom the photo'], ['Cropping: Enter / Esc', 'Done / cancel'],
       ['Ctrl/⌘ + + / − / 0', 'Zoom in / out / fit'], ['Shift + 0 / 1 / 2', 'Zoom to 100% / fit page / selection'], ['Ctrl/⌘ + wheel, pinch', 'Zoom at the pointer'],
-      ['Space + drag, middle-drag', 'Pan the canvas'], ['Arrow keys, nothing selected', 'Scroll the canvas (change page in presentations)'], ['Ctrl/⌘ + Enter', 'Present (presentations)'], ['In present mode: ← → Space', 'Change page'], ['P / F', 'Presenter view / full screen'],
+      ['Space + drag, middle-drag', 'Pan the canvas'], ['Arrow keys, nothing selected', 'Scroll the canvas (change page in presentations)'], ['Ctrl/⌘ + Enter', 'Present (presentations)'], ['Space', 'Play / pause the timeline (videos, presentations)'], ['← → on the timeline ruler', 'Move the playhead a frame (Shift: 1 s)'], ['In present mode: ← → Space', 'Change page'], ['P / F', 'Presenter view / full screen'],
       ['Ctrl/⌘ + ] / [', 'Bring forward / send backward'], ['Shift + Ctrl/⌘ + ] / [', 'Bring to front / send to back'], ['Shift + H / V', 'Flip horizontal / vertical'],
       ['Shift + Ctrl/⌘ + L', 'Lock / unlock'], ['Shift + Ctrl/⌘ + H', 'Hide / show'], ['Ctrl/⌘ + Alt/Option + C / V', 'Copy / paste style'],
       ['Alt/Option + A / H / D', 'Align left / centre / right'], ['Alt/Option + W / V / S', 'Align top / middle / bottom'], ['Shift + click', 'Add to selection, set the key object'],

@@ -1,8 +1,8 @@
 // Offline cache for the web/PWA build. Bump VERSION when files change.
-const VERSION = 'atelier-v1.0.1';
+const VERSION = 'atelier-v1.0.2';
 const FILES = [
   './', 'index.html', 'manifest.webmanifest', 'css/styles.css', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png',
-  'js/util.js', 'js/store.js', 'js/model.js', 'js/render.js', 'js/templates.js', 'js/export.js', 'js/imagetools.js', 'js/ai.js',
+  'js/util.js', 'js/store.js', 'js/model.js', 'js/render.js', 'js/templates.js', 'js/export.js', 'js/video.js', 'js/imagetools.js', 'js/ai.js',
   'js/editor.js', 'js/editor-ui.js', 'js/panels.js', 'js/present.js', 'js/home.js', 'js/app.js',
 ];
 self.addEventListener('install', (e) => e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())));

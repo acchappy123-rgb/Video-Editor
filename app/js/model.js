@@ -84,6 +84,8 @@
   M.newShape = (shape = 'rect', o = {}) => base('shape', { shape, fill: '#8c52ff', stroke: '#1a1a1a', strokeWidth: 0, dash: 'solid', radius: 0, ...o });
   M.newLine = (o = {}) => base('line', { p1: { x: 100, y: 200 }, p2: { x: 400, y: 200 }, stroke: '#1a1a1a', strokeWidth: 6, dash: 'solid', start: 'none', end: 'none', elbow: false, ...o });
   M.newImage = (asset, o = {}) => base('image', { asset: asset.id, nw: asset.w, nh: asset.h, crop: { x: 0, y: 0, w: 1, h: 1 }, adj: {}, radius: 0, ...o });
+  // A clip: trimIn/trimOut are seconds of the source, begin is when it starts on its page, speed its playback rate.
+  M.newVideo = (asset, o = {}) => base('video', { asset: asset.id, poster: asset.poster, nw: asset.w || 640, nh: asset.h || 360, dur: asset.duration || 0, crop: { x: 0, y: 0, w: 1, h: 1 }, radius: 0, trimIn: 0, trimOut: asset.duration || 0, begin: 0, speed: 1, volume: 1, muted: false, loop: false, ...o });
   // Sample copy ("Add a heading") is selected when editing starts, so typing replaces it; once the text changes it is ordinary text.
   M.sample = (el) => ((el.placeholder = el.text), el);
   M.newSticky = (o = {}) => {

@@ -186,16 +186,16 @@
     if (f) { f.focus({ preventScroll: true }); f.scrollIntoView({ block: 'nearest' }); }
   };
   EU.refreshPanel = () => {
-    if (EU.panelOpen && ['position', 'animate', 'effects', 'imageEdit', 'chart', 'table', 'comments', 'crop'].includes(EU.panel)) showPanel();
+    if (EU.panelOpen && ['position', 'animate', 'effects', 'imageEdit', 'chart', 'table', 'comments', 'crop', 'video'].includes(EU.panel)) showPanel();
   };
   EU.onSelectionChange = () => {
     if (EU.panelOpen && EU.panel === 'position' && A.P.syncLayers?.()) return;
-    if (EU.panelOpen && ['position', 'animate', 'effects', 'imageEdit', 'chart', 'table', 'crop'].includes(EU.panel)) showPanel();
+    if (EU.panelOpen && ['position', 'animate', 'effects', 'imageEdit', 'chart', 'table', 'crop', 'video'].includes(EU.panel)) showPanel();
   };
   // A typed panel whose selection no longer fits (another click, an undo) gives way to Elements.
   function showPanel() {
     const els = E.selEls();
-    const fits = { effects: (x) => x.type === 'text', imageEdit: (x) => x.type === 'image' || x.asset, crop: (x) => x.type === 'image' || E.isPhotoFrame(x), chart: (x) => x.type === 'chart', table: (x) => x.type === 'table' }[EU.panel];
+    const fits = { effects: (x) => x.type === 'text', imageEdit: (x) => x.type === 'image' || (x.asset && x.type !== 'video'), crop: (x) => x.type === 'image' || x.type === 'video' || E.isPhotoFrame(x), chart: (x) => x.type === 'chart', table: (x) => x.type === 'table', video: (x) => x.type === 'video' }[EU.panel];
     // typed panels edit every selected element, so all must fit; crop, chart and table data are per element
     const ok = !fits || (els.length > 0 && els.every(fits) && (els.length === 1 || ['effects', 'imageEdit'].includes(EU.panel)));
     if (ok) EU.renderPanel();
@@ -376,6 +376,16 @@
         EU.tbBtn('flip', 'Flip', (e) => U.menu(e.currentTarget, [{ label: 'Flip horizontal', icon: 'flip', onClick: () => E.flip('h') }, { label: 'Flip vertical', icon: 'flip', onClick: () => E.flip('v') }]), { label: 'Flip' }),
         radiusBtn(el, 'radius'),
         shadowBtn(els)
+      );
+    }
+    if (same && el.type === 'video') {
+      add(
+        els.length === 1 ? EU.tbBtn('video', 'Edit video: trim, sound and speed', () => EU.openPanel('video'), { label: 'Edit video' }) : null,
+        els.length === 1 ? EU.tbBtn('crop', 'Crop', () => EU.openPanel('crop'), { label: 'Crop' }) : null,
+        EU.tbBtn(el.muted ? 'mute' : 'volume', el.muted ? 'Unmute' : 'Mute', () => EU.apply((x) => (x.muted = !el.muted)), { active: !!el.muted }),
+        EU.tbBtn('flip', 'Flip', (e) => U.menu(e.currentTarget, [{ label: 'Flip horizontal', icon: 'flip', onClick: () => E.flip('h') }, { label: 'Flip vertical', icon: 'flip', onClick: () => E.flip('v') }]), { label: 'Flip' }),
+        radiusBtn(el, 'radius'),
+        EU.tbBtn('effects', 'Shadow', () => EU.apply((x) => (x.shadow = !x.shadow)), { active: !!el.shadow })
       );
     }
     if (same && el.type === 'line') {
@@ -611,6 +621,7 @@
       E.isPhotoFrame(el) ? { label: 'Replace photo', icon: 'upload', onClick: () => EU.openPanel('uploads', 'frame') } : null,
       el.type === 'image' ? { label: 'Set image as background', icon: 'image', onClick: () => E.setBackgroundFromImage() } : null,
       el.type === 'image' ? { label: 'Replace image', icon: 'upload', onClick: () => EU.openPanel('uploads', 'replace') } : null,
+      el.type === 'video' ? { label: 'Fill the page', icon: 'fullscreen', onClick: () => EU.apply((x) => x.type === 'video' && A.V.cover(x, E.d.width, E.d.height)) } : null,
       ['shape'].includes(el.type) && !el.asset ? { label: 'Use as photo frame', icon: 'frame', onClick: () => { EU.apply((x) => (x.frame = true)); EU.openPanel('uploads', 'frame'); } } : null,
     ]);
   };
@@ -901,10 +912,14 @@
     const progress = h('div.progress', h('div.bar'));
     const opts = h('div.dl-opts');
     // only the labels change while the slider is dragged: rebuilding the options would end the drag
+    // a video is never recorded above the design's own size
     const updSize = () => {
+      const k = fmt.value === 'video' ? Math.min(1, size.value) : size.value;
       sizeVal.textContent = size.value;
-      sizeLbl.textContent = `${Math.round(d.width * size.value)} × ${Math.round(d.height * size.value)} px`;
+      sizeLbl.textContent = `${Math.round(d.width * k)} × ${Math.round(d.height * k)} px`;
     };
+    const fps = h('select.input', [24, 30, 60].map((v) => h('option', { value: v, selected: v === 30 ? true : null }, v + ' frames per second')));
+    const vfmt = h('select.input', [['', 'Best for this browser'], ['mp4', 'MP4'], ['webm', 'WebM']].map(([v, l]) => h('option', { value: v }, l)));
     const upd = () => {
       const f = fmt.value;
       updSize();
@@ -914,7 +929,7 @@
       // PNG is lossless: the browser ignores a quality setting for it
       if (['jpg', 'pdf', 'pdfprint'].includes(f)) opts.append(h('label.check', compress, ' Compress file (lower quality)'));
       if (f === 'pdfprint') opts.append(h('label.check', bleed, ' Print bleed'), h('label.check', marks, ' Crop marks'));
-      if (f === 'video') opts.append(h('p.muted', 'Video plays each page for its duration with animations. Recording happens in real time.'));
+      if (f === 'video') opts.append(h('div.row', h('label.field', h('span', 'Format'), vfmt), h('label.field', h('span', 'Frame rate'), fps)), h('p.muted', A.X.offlineVideo() ? 'Each page plays for its duration with its animations, video clips and sound. Every frame is rendered exactly, so a long video takes a while.' : 'Each page plays for its duration with its animations, video clips and sound. Recording happens in real time.'));
       if (f === 'html') opts.append(h('p.muted', 'Creates one self-contained web page. Each page becomes a section; links stay clickable. You can host it for free on GitHub Pages.'));
     };
     fmt.addEventListener('change', upd);
@@ -938,7 +953,7 @@
           try {
             // a box ticked for another format and then hidden doesn't apply (JPG has no transparency)
             const f = fmt.value;
-            await EU.runExport(f, pages, { scale: +size.value, transparent: f === 'png' && transparent.checked, compress: compress.checked, bleed: bleed.checked, marks: marks.checked, onProgress });
+            await EU.runExport(f, pages, { scale: +size.value, transparent: f === 'png' && transparent.checked, compress: compress.checked, bleed: bleed.checked, marks: marks.checked, fps: +fps.value, format: vfmt.value, onProgress });
             U.toast('Download ready', 'ok');
           } catch (e) {
             console.error(e);
@@ -969,7 +984,7 @@
     if (f === 'pdf') return U.download(await X.pdf(d, pages, { scale: 1.5 * o.scale, quality: q, onProgress: o.onProgress }), `${name}.pdf`);
     if (f === 'pdfprint') return U.download(await X.pdf(d, pages, { scale: 3.125 * Math.max(1, o.scale / 2), quality: o.compress ? 0.8 : 0.97, bleed: o.bleed, marks: o.marks, onProgress: o.onProgress }), `${name}-print.pdf`);
     if (f === 'gif') return U.download(await X.gifFromDesign(d, pages, { onProgress: o.onProgress }), `${name}.gif`);
-    if (f === 'video') { const v = await X.video(d, pages, { scale: Math.min(o.scale, 1), onProgress: o.onProgress }); return U.download(v.blob, `${name}.${v.ext}`); }
+    if (f === 'video') { const v = await X.video(d, pages, { scale: Math.min(o.scale, 1), fps: o.fps, format: o.format, onProgress: o.onProgress }); return U.download(v.blob, `${name}.${v.ext}`); }
     if (f === 'pptx') return U.download(await X.pptx(d, pages, { scale: Math.max(1, o.scale), onProgress: o.onProgress }), `${name}.pptx`);
     if (f === 'html') return U.download(await X.website(d, pages), `${name}.html`);
     if (f === 'design') return U.download(await S.exportDesignFile(d), `${name}.atelier.json`);
@@ -1087,10 +1102,16 @@
   };
 
   // ---------- timeline (presentations & videos) ----------
+  // The pages play one after another. The playhead (A.V.head, seconds into the design) is dragged along the ruler to
+  // preview any moment; Play runs the design from it.
   EU.refreshTimeline = () => {
     const tl = EU.timeline;
     if (!tl || !E.d) return;
+    A.V.followPage();
+    // the scroll position and a focused ruler or play button survive the rebuild
+    const scrollX = tl.querySelector('.tl-scroll')?.scrollLeft || 0, focus = ['.tl-ruler', '.play'].find((sel) => document.activeElement?.matches(sel) && tl.contains(document.activeElement));
     tl.innerHTML = '';
+    EU.tlGeo = null;
     if (E.layout() !== 'strip') { tl.style.display = 'none'; return; }
     tl.style.display = '';
     const PX = innerWidth < 700 ? 22 : 34;
@@ -1100,7 +1121,13 @@
       if (i > 0) track.append(h('button.tl-trans' + (p.transition && p.transition !== 'none' ? '.on' : ''), { title: 'Transition: ' + (p.transition || 'none'), onclick: (e) => transitionMenu(e.currentTarget, p) }, U.ic('transition', 12)));
       const thumb = h('div.tl-thumb', { html: R.pageSVG(E.d, p, { width: 120, idp: 't' + i + '_' }) });
       const handle = h('div.tl-grip', { title: 'Drag to change duration' });
-      const block = h('div.tl-block' + (i === E.pi ? '.on' : '') + (p.hidden ? '.hidden-page' : ''), { style: { background: R.cssPaint(p.bg?.color || '#fff'), width: Math.max(48, (p.duration || 5) * PX) + 'px' }, onclick: () => E.setPage(i) }, thumb, h('span.tl-dur', (p.duration || 5) + 's'), handle);
+      // where each clip plays on the page
+      const dur = p.duration || 5;
+      const clips = A.V.clips(p).filter((c) => !c.hidden).map((c) => {
+        const a = Math.min(1, A.V.span(c).begin / dur), b = c.loop ? 1 : Math.min(1, A.V.end(c) / dur);
+        return h('span.tl-clip', { style: { left: a * 100 + '%', width: Math.max(0, b - a) * 100 + '%' } });
+      });
+      const block = h('div.tl-block' + (i === E.pi ? '.on' : '') + (p.hidden ? '.hidden-page' : ''), { style: { background: R.cssPaint(p.bg?.color || '#fff'), width: Math.max(48, dur * PX) + 'px' }, onclick: () => E.setPage(i) }, thumb, clips, h('span.tl-dur', dur + 's'), handle);
       block.draggable = true;
       block.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/x-page', String(i)); });
       block.addEventListener('dragover', (e) => e.preventDefault());
@@ -1133,22 +1160,158 @@
       track.append(block);
     });
     track.append(h('button.tl-add', { title: 'Add page', onclick: () => E.addPage(E.pi + 1) }, U.ic('plus', 18)));
-    const audio = E.d.audio ? h('div.tl-audio', U.ic('music', 14), ' Soundtrack', h('button.icon-btn.sm', { title: 'Remove audio', onclick: () => { delete E.d.audio; E.changed({ all: true }); } }, U.ic('x', 12))) : h('button.tl-audio.add', { onclick: () => EU.openPanel('uploads', 'audio') }, U.ic('music', 14), ' Add audio');
+    const ruler = h('div.tl-ruler', { role: 'slider', tabindex: 0, 'aria-label': 'Playhead', 'aria-valuemin': 0, 'aria-valuemax': U.round(A.V.total(E.d), 2), title: 'Drag to preview any moment (arrow keys step, Space plays)' });
+    EU.head = h('div.tl-head', h('span.tl-knob'));
+    // the soundtrack is a lane under the pages, as long as the design
+    const audio = E.d.audio ? soundtrackBar() : h('button.tl-audio.add', { onclick: () => EU.openPanel('uploads', 'audio') }, U.ic('music', 14), ' Add audio');
+    const lane = h('div.tl-lane', ruler, track, audio, EU.head);
+    EU.splitBtn = h('button.icon-btn.sm', { onclick: () => splitPage() }, U.ic('split', 16));
+    EU.timeLabel = h('span.tl-time');
+    const scroll = h('div.tl-scroll', lane);
     tl.append(
       h('div.tl-controls',
-        h('button.icon-btn.play', { title: playing ? 'Pause' : 'Play page preview', onclick: () => (playing ? A.Present.stopPreview() : A.Present.preview()) }, U.ic(playing ? 'pause' : 'play', 18)),
-        h('button.icon-btn.sm', { title: 'Split page at its midpoint', onclick: () => splitPage() }, U.ic('split', 16)),
+        h('button.icon-btn.play', { title: playing ? 'Pause' : 'Play from the playhead', onclick: () => (playing ? A.Present.stopPreview() : EU.play()) }, U.ic(playing ? 'pause' : 'play', 18)),
+        EU.splitBtn,
+        EU.timeLabel,
         h('span.muted.tl-total', 'Total ' + A.X.totalDuration(E.d.pages) + 's')
       ),
-      h('div.tl-scroll', track, audio)
+      scroll
     );
+    scroll.scrollLeft = scrollX;
+    if (focus) tl.querySelector(focus).focus({ preventScroll: true });
+    // block positions (short pages keep a minimum width), for the ruler and the playhead
+    const blocks = U.$$('.tl-block', track).map((b) => ({ x: b.offsetLeft, w: b.offsetWidth }));
+    EU.tlGeo = { blocks, starts: A.V.starts(E.d), durs: E.d.pages.map((p) => p.duration || 5), lane };
+    const step = [1, 2, 5, 10, 30, 60].find((s) => s * PX >= 34) || 60;
+    EU.tlGeo.starts.forEach((st, i) => {
+      for (let s = Math.ceil(st / step) * step; s < st + EU.tlGeo.durs[i] - 1e-6; s += step) ruler.append(h('span.tl-tick', { style: { left: xAt(s, i) + 'px' } }, A.V.fmt(s).replace(/\.\d$/, '')));
+    });
+    ruler.addEventListener('pointerdown', scrub);
+    EU.head.addEventListener('pointerdown', scrub);
+    ruler.addEventListener('keydown', (e) => {
+      const T = A.V.head, total = A.V.total(E.d), st = EU.tlGeo.starts;
+      const to = { ArrowLeft: T - (e.shiftKey ? 1 : 1 / 30), ArrowRight: T + (e.shiftKey ? 1 : 1 / 30), Home: 0, End: total, PageUp: [...st].reverse().find((s) => s < T - 1e-6) ?? 0, PageDown: st.find((s) => s > T + 1e-6) ?? total }[e.key];
+      if (to == null && e.key !== ' ') return;
+      e.preventDefault();
+      // the canvas shortcuts (nudging the selection) don't see these keys
+      e.stopPropagation();
+      if (e.key === ' ') return A.Present.previewing ? A.Present.stopPreview() : EU.play();
+      A.Present.stopPreview();
+      A.V.seekTo(to, { anim: false });
+      EU.tlGeo?.lane.querySelector('.tl-ruler')?.focus({ preventScroll: true });
+    });
+    drawAudio();
+    EU.drawHead();
   };
+  // x on the timeline lane of design time T on page i
+  const xAt = (T, i) => {
+    const g = EU.tlGeo, b = g.blocks[i];
+    return b.x + U.clamp((T - g.starts[i]) / g.durs[i], 0, 1) * b.w;
+  };
+  const tAt = (x) => {
+    const g = EU.tlGeo;
+    const i = g.blocks.findIndex((b) => x <= b.x + b.w);
+    const k = i < 0 ? g.blocks.length - 1 : i, b = g.blocks[k];
+    return g.starts[k] + U.clamp((x - b.x) / b.w, 0, 1) * g.durs[k];
+  };
+  // Drag on the ruler: the canvas shows that moment (animations and clip frames) until the drag ends.
+  function scrub(e) {
+    if (e.button !== 0 || !EU.tlGeo) return;
+    e.preventDefault();
+    A.Present.stopPreview();
+    const id = e.pointerId, d = E.d;
+    // the lane is rebuilt when the playhead moves to another page, so it is looked up on every move
+    const at = (ev) => tAt(ev.clientX - EU.tlGeo.lane.getBoundingClientRect().left);
+    A.V.seekTo(at(e));
+    const mv = (ev) => ev.pointerId === id && E.d === d && EU.tlGeo && A.V.seekTo(at(ev));
+    const up = (ev) => {
+      if (ev.pointerId !== id) return;
+      removeEventListener('pointermove', mv); removeEventListener('pointerup', up); removeEventListener('pointercancel', up);
+      if (E.d === d) A.V.seekTo(A.V.head, { anim: false });
+      EU.tlGeo?.lane.querySelector('.tl-ruler')?.focus({ preventScroll: true });
+    };
+    addEventListener('pointermove', mv);
+    addEventListener('pointerup', up);
+    addEventListener('pointercancel', up);
+  }
+  EU.drawHead = () => {
+    const g = EU.tlGeo;
+    if (!g || !EU.head?.isConnected) return;
+    const T = A.V.head, own = A.V.local(E.pi);
+    const { i, local } = own != null ? { i: E.pi, local: own } : A.V.pageAt(E.d, T);
+    const x = xAt(g.starts[i] + local, i);
+    EU.head.style.transform = `translateX(${x}px)`;
+    EU.timeLabel.textContent = A.V.fmt(T);
+    const ruler = g.lane.querySelector('.tl-ruler');
+    ruler.setAttribute('aria-valuenow', U.round(T, 2));
+    ruler.setAttribute('aria-valuetext', A.V.fmt(T));
+    const mid = !(own > 0.05 && own < g.durs[E.pi] - 0.05);
+    EU.splitBtn.title = mid ? 'Split page at its midpoint' : 'Split page at the playhead';
+    // a playing head stays in view
+    const sc = g.lane.parentNode;
+    if (A.Present.previewing && (x < sc.scrollLeft || x > sc.scrollLeft + sc.clientWidth - 20)) sc.scrollLeft = x - 40;
+  };
+  // Play from the playhead to the end (from the start when it is at the end).
+  EU.play = () => {
+    const total = A.V.total(E.d);
+    A.Present.preview({ from: A.V.head >= total - 0.05 ? 0 : A.V.head, to: total });
+  };
+  // The soundtrack bar spans the design, with its fades drawn as ramps; it opens the soundtrack settings.
+  function soundtrackBar() {
+    const name = h('span.tl-audio-name', 'Soundtrack');
+    S.get('assets', E.d.audio).then((a) => a && (name.textContent = a.name.replace(/\.[^.]+$/, '')));
+    const btn = h('button.tl-audio-btn', { title: 'Soundtrack: start, volume and fades', 'aria-haspopup': 'dialog', onclick: () => soundtrackPopover(btn) }, U.ic('music', 14), name, h('span.tl-audio-opts', U.ic('sliders', 12)));
+    return h('div.tl-audio', h('span.tl-fade.in'), h('span.tl-fade.out'), btn,
+      h('button.icon-btn.sm', { title: 'Remove audio', onclick: () => A.V.setTrack(null) }, U.ic('x', 12)));
+  }
+  function drawAudio() {
+    const bar = EU.tlGeo?.lane.querySelector('.tl-audio:not(.add)');
+    if (!bar || !E.d.audio) return;
+    const o = A.V.trackOpts(E.d), total = A.V.total(E.d), x = (T) => xAt(T, A.V.pageAt(E.d, T).i), end = x(total);
+    bar.style.width = end + 'px';
+    bar.querySelector('.tl-fade.in').style.width = x(Math.min(total, o.fadeIn)) + 'px';
+    bar.querySelector('.tl-fade.out').style.width = end - x(Math.max(0, total - o.fadeOut)) + 'px';
+    bar.querySelector('.tl-audio-opts').hidden = !(o.start || o.fadeIn || o.fadeOut || o.volume < 1 || !o.loop);
+  }
+  // Soundtrack settings: where in the track it starts, its volume and fades (each change one undo step).
+  function soundtrackPopover(anchor) {
+    const o = A.V.trackOpts(E.d);
+    const set = (patch, fin) => {
+      if (!E.d.audio) return;
+      E.d.audioOpts = { ...A.V.trackOpts(E.d), ...patch };
+      E.changed({ commit: fin, toolbar: false });
+      drawAudio();
+    };
+    const startRow = h('div');
+    const fill = (len) => startRow.replaceChildren(EU.slider('Start at (s into the track)', U.round(o.start, 1), 0, Math.max(1, U.round(len, 1)), 0.1, (v, f) => set({ start: v }, f)));
+    fill(Math.max(o.start, 60));
+    // the slider spans the whole track once its length is known
+    const probe = document.createElement('audio');
+    probe.preload = 'metadata';
+    probe.onloadedmetadata = () => { if (Number.isFinite(probe.duration) && startRow.isConnected && !startRow.contains(document.activeElement)) fill(probe.duration); probe.removeAttribute('src'); };
+    A.V.trackURL(E.d).then((u) => u && (probe.src = u));
+    const loop = h('input', { type: 'checkbox', checked: o.loop });
+    loop.addEventListener('change', () => set({ loop: loop.checked }, true));
+    U.popover(anchor, h('div.slider-pop.tl-audio-pop', { role: 'dialog', 'aria-label': 'Soundtrack' },
+      h('b', 'Soundtrack'),
+      startRow,
+      EU.slider('Volume', Math.round(o.volume * 100), 0, 100, 1, (v, f) => set({ volume: v / 100 }, f), (v) => v + '%'),
+      EU.slider('Fade in (s)', o.fadeIn, 0, 10, 0.1, (v, f) => set({ fadeIn: v }, f)),
+      EU.slider('Fade out (s)', o.fadeOut, 0, 10, 0.1, (v, f) => set({ fadeOut: v }, f)),
+      h('label.check', loop, ' Loop to the end of the design'),
+      h('div.row', h('button.btn.sm', { onclick: () => { U.closePop(); EU.openPanel('uploads', 'audio'); } }, U.ic('upload', 14), ' Replace'), h('button.btn.sm', { onclick: () => { U.closePop(); A.V.setTrack(null); } }, U.ic('trash', 14), ' Remove'))
+    ));
+  }
+  // Split at the playhead (at the page's midpoint when the playhead is at its start or end): one undo step. The second
+  // part continues the first: its clips go on from the cut, nothing enters again and the first part has no exits.
   function splitPage() {
     const p = E.page();
-    const d = p.duration || 5;
-    if (d < 1) return U.toast('Page is too short to split');
+    const d = p.duration || 5, at = A.V.local(E.pi);
+    const head = at > 0.05 && at < d - 0.05;
+    if (!head && d < 1) return U.toast('Page is too short to split');
+    if (!E.canEdit()) return;
     E.finishText();
-    // one undo step: the second half is a copy of the page (as E.duplicatePage makes it) taking the rest of the time
+    const cut = head ? U.round(at, 2) : U.round(d / 2, 1);
     const q = U.clone(p), ids = {};
     q.id = U.uid('p_');
     q.elements.forEach((e) => (ids[e.id] = e.id = U.uid('e_')));
@@ -1156,9 +1319,26 @@
       if (e.c1) e.c1 = ids[e.c1];
       if (e.c2) e.c2 = ids[e.c2];
     });
-    p.duration = U.round(d / 2, 1);
-    q.duration = U.round(d - p.duration, 1);
+    q.transition = 'none';
+    q.anim = 'none';
+    for (const e of q.elements) {
+      if (e.anim?.in && e.anim.in !== 'none' && (e.anim.delay || 0) < cut) e.anim.in = 'none';
+      else if (e.anim?.delay) e.anim.delay = Math.max(0, U.round(e.anim.delay - cut, 2));
+      if (e.type !== 'video') continue;
+      const s = A.V.span(e);
+      if (cut <= s.begin) e.begin = U.round(s.begin - cut, 3);
+      else {
+        // a looping clip goes on looping from the start of the second part
+        if (!e.loop) e.trimIn = U.round(Math.min(s.outT - 0.05, s.inT + (cut - s.begin) * s.speed), 3);
+        e.begin = 0;
+      }
+    }
+    for (const e of p.elements) if (e.anim?.out && e.anim.out !== 'none') e.anim.out = 'none';
+    p.duration = cut;
+    q.duration = U.round(d - cut, 2);
     E.addPage(E.pi + 1, q);
+    A.V.head = A.V.starts(E.d)[E.pi];
+    EU.drawHead();
     U.toast('Page split into two scenes');
   }
 
