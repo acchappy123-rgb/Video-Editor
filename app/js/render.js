@@ -311,6 +311,7 @@
     if (i !== s.length) throw 0;
     return v;
   }
+  R.arith = arith;
   // A, B … Z, AA, AB …
   R.colName = (c) => {
     let s = '';

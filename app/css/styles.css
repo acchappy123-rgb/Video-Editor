@@ -360,6 +360,11 @@ body.tool-motion .page-frame { cursor: move; }
 .user-guide.y { left: 0; right: 0; height: 5px; margin-top: -2px; border-top: 1px solid #00b3ff; cursor: pointer; }
 .gap-label, .size-label { position: absolute; background: var(--guide); color: #fff; font-size: 11px; font-weight: 700; padding: 1px 5px; border-radius: 4px; white-space: nowrap; }
 .size-label { background: #1f2027; transform: translateX(-50%); }
+/* equal spacing: a line across each matching gap, with its size */
+.gap-label.eq { transform: translate(-50%, -50%); }
+.gap-line { position: absolute; background: var(--guide); }
+.gap-line.x { height: 1px; }
+.gap-line.y { width: 1px; }
 .marquee { position: absolute; border: 1px solid var(--sel); background: rgba(139, 61, 255, .08); }
 .comment-pin { position: absolute; transform: translate(-30%, -70%); width: 26px; height: 26px; border-radius: 13px 13px 13px 2px; background: #ffb800; color: #000; font-size: 12px; font-weight: 700; pointer-events: auto; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
 .text-edit { position: absolute; background: transparent; border: 0; outline: 1px dashed var(--sel); resize: none; overflow: hidden; padding: 0; margin: 0; pointer-events: auto; white-space: pre-wrap; overflow-wrap: break-word; caret-color: var(--sel); }
