@@ -99,6 +99,9 @@
   const dataCache = new Map();
   S.addAsset = async (blob, meta = {}) => {
     const a = { id: A.U.uid('a_'), blob, type: blob.type, name: meta.name || 'upload', kind: meta.kind || kindOf(blob.type), w: meta.w, h: meta.h, createdAt: Date.now(), hidden: !!meta.hidden, tag: meta.tag || '' };
+    // a video keeps its length and the id of its poster frame (a hidden image asset)
+    if (meta.duration) a.duration = meta.duration;
+    if (meta.poster) a.poster = meta.poster;
     if (a.kind === 'image' && !a.w) {
       try {
         const url = URL.createObjectURL(blob);
@@ -142,12 +145,14 @@
   // connectors, groups and comments pointing at it follow. Numeric fields are forced to numbers.
   const ID = /^[\w-]+$/;
   const fresh = (id, prefix, map) => (typeof id === 'string' && ID.test(id) ? id : id == null ? A.U.uid(prefix) : (map[id] ||= A.U.uid(prefix)));
-  const NUMS = ['x', 'y', 'w', 'h', 'rot', 'opacity', 'nw', 'nh', 'votes', 'strokeWidth', 'size', 'radius', 'lh', 'spacing'];
+  const NUMS = ['x', 'y', 'w', 'h', 'rot', 'opacity', 'nw', 'nh', 'votes', 'strokeWidth', 'size', 'radius', 'lh', 'spacing', 'dur', 'trimIn', 'trimOut', 'begin', 'volume', 'speed'];
   const nums = (o, keys) => o && typeof o === 'object' && keys.forEach((k) => o[k] != null && typeof o[k] !== 'number' && (o[k] = +o[k] || 0));
   const str = (o, k, def = '') => (o[k] = o[k] == null ? def : String(o[k]));
   S.cleanDesign = (d) => {
     nums(d, ['width', 'height', 'createdAt', 'updatedAt']);
     str(d, 'title', 'Untitled design');
+    if (d.audioOpts != null && !obj(d.audioOpts)) delete d.audioOpts;
+    nums(d.audioOpts, ['start', 'volume', 'fadeIn', 'fadeOut']);
     const pm = {}, em = {}, gm = {};
     d.pages = (Array.isArray(d.pages) ? d.pages : []).filter((p) => p && typeof p === 'object');
     for (const p of d.pages) {
@@ -180,7 +185,8 @@
       const out = { ...a, blob, type: blob.type, kind: KINDS.includes(a.kind) ? a.kind : kindOf(blob.type), hidden: !!a.hidden };
       str(out, 'name', 'upload');
       str(out, 'tag');
-      nums(out, ['w', 'h', 'createdAt']);
+      nums(out, ['w', 'h', 'createdAt', 'duration']);
+      if (out.poster != null && !(typeof out.poster === 'string' && ID.test(out.poster))) delete out.poster;
       return out;
     } catch (e) {
       return null;
@@ -249,7 +255,7 @@
     const walk = (o) => {
       if (!o || typeof o !== 'object') return;
       for (const k in o) {
-        if ((k === 'asset' || k === 'audio') && typeof o[k] === 'string') ids.add(o[k]);
+        if ((k === 'asset' || k === 'audio' || k === 'poster') && typeof o[k] === 'string') ids.add(o[k]);
         else walk(o[k]);
       }
     };

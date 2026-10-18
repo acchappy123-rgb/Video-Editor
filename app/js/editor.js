@@ -46,6 +46,7 @@
     E.finishText();
     E.flushCommit();
     clearInterval(E.versionTimer);
+    A.V.release('e');
     // an untouched design keeps its 'last edited' time (it is only saved for a missing card preview)
     if (E.dirty || !E.d.thumb) await E.save();
     await E.snapshot();
@@ -244,11 +245,13 @@
     const W = E.d.width, H = E.d.height, z = E.zoom;
     const t = opts.t ?? (i === E.pi ? E.previewT : null);
     // lines and drawings stay as easy to hit at any zoom (a finger needs more room)
-    const parts = R.pageParts(E.d, page, { idp: 'p' + i + '_', t, skip: E.editingId ? new Set([E.editingId]) : null, hit: (coarse.matches ? 36 : 16) / z });
+    const parts = R.pageParts(E.d, page, { idp: 'p' + i + '_', t, skip: E.editingId ? new Set([E.editingId]) : null, hit: (coarse.matches ? 36 : 16) / z, live: true });
     b.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     b.svg.setAttribute('width', W * z);
     b.svg.setAttribute('height', H * z);
     b.svg.innerHTML = `<defs>${parts.defs}</defs>${parts.bg}${parts.els}`;
+    // video clips show the playhead's frame, and play along with a preview
+    A.V.mount(b.svg, page, t ?? A.V.local(i), { playing: A.Present.previewing && i === E.pi });
     b.frame.style.width = W * z + 'px';
     b.frame.style.height = H * z + 'px';
     b.el.classList.toggle('active', i === E.pi);
@@ -491,6 +494,7 @@
         sb.appendChild(U.h('div.rot-wrap', rh, mh));
       }
     }
+    if (single?.type === 'video' && E.editingId == null && !E.dragging) A.V.controls(sb, single);
     b.overlay.appendChild(sb);
     miniMenu(b, E.unionBox(els), locked);
   };
@@ -646,6 +650,7 @@
     else if (el.type === 'table') A.EU.openPanel('table');
     else if (el.type === 'chart') A.EU.openPanel('chart');
     else if (el.type === 'image') A.EU.openPanel('imageEdit');
+    else if (el.type === 'video') A.EU.openPanel('video');
   };
   E.onContext = (e, i, fromButton) => {
     e.preventDefault();
@@ -888,7 +893,7 @@
     );
   }
 
-  const PROPORTIONAL = new Set(['image', 'icon', 'emoji', 'text']);
+  const PROPORTIONAL = new Set(['image', 'video', 'icon', 'emoji', 'text']);
   // handles preventDefault their pointerdown, so a typed panel value is committed here, before the drag starts from it
   function startResize(e, h) {
     e.stopPropagation();
@@ -923,7 +928,7 @@
             nw = o.w * k;
             nh = o.h * k;
           }
-          if (el.type === 'image' && !corner) {
+          if ((el.type === 'image' || el.type === 'video') && !corner) {
             // side handles crop the image (a flipped picture is cropped on its mirrored side)
             const c = { ...o.crop };
             const pxPerX = o.w / c.w, pxPerY = o.h / c.h;

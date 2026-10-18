@@ -5,22 +5,41 @@
   const U = A.U, R = A.R, S = A.S, E = A.E, h = U.h;
   const PR = (A.Present = { active: false, previewing: false });
 
-  // ---------- in-editor preview of the current page's animations ----------
-  PR.preview = () => {
+  // ---------- in-editor preview ----------
+  // Plays design time `from` to `to` (seconds, pages one after another), moving the playhead, with video clips and the
+  // soundtrack. With no arguments: the current page from its start.
+  PR.preview = ({ from, to } = {}) => {
     PR.stopPreview();
     if (!E.d) return;
+    const d = E.d, V = A.V, st = V.starts(d)[E.pi];
+    from = U.clamp(from ?? st, 0, V.total(d));
+    to = Math.min(to ?? st + (E.page().duration || 5), V.total(d));
+    V.stopInline();
     PR.previewing = true;
+    // the page the preview shows; the user showing another page (or design) ends it
+    let i = V.pageAt(d, from).i;
+    if (from >= to - 1e-6 && i > 0 && Math.abs(V.starts(d)[i] - from) < 1e-6) i--;
+    PR.page = d.pages[i];
+    if (i !== E.pi) { E.previewT = 0; E.setPage(i, false); }
     A.EU.refreshTimeline();
-    const d = E.d, page = (PR.page = E.page());
-    const dur = page.duration || 5;
+    const track = (PR.track = V.track(d));
     const t0 = performance.now();
     const loop = () => {
       if (!PR.previewing) return;
-      const t = (performance.now() - t0) / 1000;
-      // showing another page (or design) ends the preview
-      if (t > dur || E.d !== d || E.page() !== page) return PR.stopPreview();
-      E.previewT = t;
-      E.renderPage(E.pi);
+      if (E.d !== d || E.page() !== PR.page) return PR.stopPreview();
+      const T = Math.min(to, from + (performance.now() - t0) / 1000);
+      // the last moment stays on the page that ends there
+      let { i: j, local } = V.pageAt(d, T);
+      if (T >= to && j > 0 && j !== E.pi && Math.abs(V.starts(d)[j] - T) < 1e-6) { j--; local = d.pages[j].duration || 5; }
+      V.head = T;
+      E.previewT = local;
+      if (j !== E.pi) { PR.page = d.pages[j]; E.setPage(j); }
+      // a page without animations only keeps its clips in step
+      else if (animated(PR.page)) E.renderPage(E.pi);
+      else V.mount(E.blocks[E.pi].svg, PR.page, local, { playing: true });
+      track?.set(T, true);
+      A.EU.drawHead?.();
+      if (T >= to) return PR.stopPreview();
       PR.raf = requestAnimationFrame(loop);
     };
     loop();
@@ -29,6 +48,8 @@
     if (!PR.previewing) return;
     PR.previewing = false;
     cancelAnimationFrame(PR.raf);
+    PR.track?.stop();
+    PR.track = null;
     E.previewT = null;
     if (E.d) {
       // redraw the previewed page wherever it is now, and the current one (a strip layout rebuilt it mid-preview)
@@ -82,8 +103,10 @@
     // a soundtrack uploaded in this session has no object URL yet
     if (d.audio) S.ensureAssetURLs([d.audio]).catch(() => {}).then(() => {
       if (stopped) return;
-      try { audio = new Audio(S.assetURL(d.audio)); audio.loop = true; audio.play().catch(() => {}); } catch (e) {}
+      try { audio = A.V.track(d); } catch (e) {}
     });
+    // the soundtrack follows the design's clock while it autoplays; a presenter moving on by hand doesn't jump it
+    const starts = A.V.starts({ pages }), total = A.V.total({ pages });
     // an editor that is already full screen hands it over to the presentation and gets it back on exit
     const toggleFS = () => (document.fullscreenElement === root ? document.exitFullscreen() : root.requestFullscreen?.())?.catch(() => {});
     if (opts.fullscreen !== false && !presenter) toggleFS();
@@ -92,10 +115,13 @@
     // a slide moved on by hand stays up as long as the presenter likes, so its exit animations don't play;
     // with autoplay they end when the countdown moves on (turning it on mid-slide restarts only the countdown)
     const exitAt = (page) => (autoplay ? (tAuto - t0) / 1000 + (page.duration || 5) : null);
-    const svgFor = (page, t, idp, links = true) => R.pageSVG(d, page, { t, idp, links, width: d.width, dur: exitAt(page) });
+    const svgFor = (page, t, idp, links = true) => R.pageSVG(d, page, { t, idp, links, width: d.width, dur: exitAt(page), live: true });
+    // video clips play in step with the slide's clock, with their sound
+    const clips = (root, page, t) => A.V.mount(root, page, t, { scope: 'p', playing: true });
     const mount = (dir) => {
       const page = pages[idx];
       const nl = h('div.pr-layer', { html: svgFor(page, 0, 'pr' + idx + '_') });
+      clips(nl, page, 0);
       const tr = page.transition && page.transition !== 'none' && layer ? page.transition : null;
       if (tr) nl.classList.add('tr-' + tr, dir < 0 ? 'rev' : 'fwd');
       const old = layer;
@@ -145,8 +171,10 @@
     const loop = () => {
       // scheduled first, so a stop() during this frame cancels it
       raf = requestAnimationFrame(loop);
-      const now = performance.now(), page = pages[idx];
-      if (layer && animated(page) && !held) layer.innerHTML = svgFor(page, (now - t0) / 1000, 'pr' + idx + '_');
+      const now = performance.now(), page = pages[idx], t = (now - t0) / 1000;
+      if (layer && animated(page) && !held) layer.innerHTML = svgFor(page, t, 'pr' + idx + '_');
+      if (layer) clips(layer, page, t);
+      audio?.set(autoplay ? starts[idx] + t : (Date.now() - started) / 1000, true, { follow: autoplay, total: autoplay ? total : null });
       clock.textContent = '⏱ ' + fmtTime((Date.now() - started) / 1000);
       if (autoplay && (now - tAuto) / 1000 >= (page.duration || 5)) go(idx + 1 < pages.length ? idx + 1 : (d.type === 'video' ? pages.length : 0));
     };
@@ -207,7 +235,9 @@
       const draw = async () => {
         while (running) {
           const t = (performance.now() - t0) / 1000;
-          const svg = R.pageSVG(d, pages[idx], { t, asset: (id) => map[id] || '', fontCSS, idp: 'rc', dur: exitAt(pages[idx]) });
+          // a clip is drawn at the frame its <video> shows
+          const frame = (el) => { const c = el.crop || { w: 1, h: 1 }; return A.V.snap(A.V.live('p', pages[idx], el), Math.max(2, Math.round(Math.min(el.nw || 640, (el.w / c.w) * scale))), Math.max(2, Math.round(Math.min(el.nh || 360, (el.h / c.h) * scale)))); };
+          const svg = R.pageSVG(d, pages[idx], { t, asset: (id) => map[id] || '', fontCSS, idp: 'rc', dur: exitAt(pages[idx]), frame });
           try { await R.pageCanvas(d, pages[idx], scale, { svg, canvas, matte: '#fff' }); } catch (e) {}
           if (cam.videoWidth) {
             const s = canvas.height * 0.26, x = canvas.width - s - 20, y = canvas.height - s - 20;
@@ -252,7 +282,8 @@
       document.removeEventListener('keydown', onKey, true);
       removeEventListener('pointerup', release, true);
       removeEventListener('pointercancel', release, true);
-      audio && audio.pause();
+      audio?.stop();
+      A.V.release('p');
       // leaving full screen before the root goes hands it back to an editor that was full screen (removal exits fully)
       if (document.fullscreenElement === root) document.exitFullscreen().catch(() => {}).then(() => root.remove());
       else root.remove();

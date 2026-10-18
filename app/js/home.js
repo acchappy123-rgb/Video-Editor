@@ -91,7 +91,7 @@
   }
   // Callers that redraw their own view pass reroute: false (re-routing resets e.g. the Projects tab).
   async function importFiles({ reroute = true } = {}) {
-    const files = await U.pickFiles('.json,image/*,audio/*,.ttf,.otf,.woff,.woff2,.svg');
+    const files = await U.pickFiles('.json,image/*,video/*,audio/*,.ttf,.otf,.woff,.woff2,.svg');
     for (const f of files) await A.app.importFile(f);
     if (reroute && A.app.view === 'home') A.app.route();
   }
@@ -207,11 +207,11 @@
       main.append(h('div.page-title', h('h1', 'Projects'), h('button.btn', { onclick: async () => { const n = await U.prompt('Folder name'); if (n) { await S.put('folders', { id: U.uid('f_'), name: n, createdAt: Date.now() }); state.tab = 'folders'; render(); } } }, U.ic('plus', 16), ' New folder')), tabs);
       if (state.tab === 'uploads') {
         const assets = await S.listAssets();
-        await S.ensureAssetURLs(assets.filter((a) => a.kind === 'image').map((a) => a.id));
+        await S.ensureAssetURLs(assets.map((a) => (a.kind === 'video' ? a.poster : a.kind === 'image' ? a.id : null)));
         main.append(h('div.row', h('button.btn.primary', { onclick: async () => { await importFiles({ reroute: false }); render(); } }, U.ic('upload', 16), ' Upload')));
         const grid = h('div.upload-grid');
         if (!assets.length) grid.append(h('p.muted', 'No uploads yet.'));
-        assets.forEach((a) => grid.append(h('div.upload-card', a.kind === 'image' ? h('img', { src: S.assetURL(a.id), alt: a.name }) : h('div.file-ic', U.ic(a.kind === 'audio' ? 'music' : a.kind === 'font' ? 'text' : 'file', 32)), h('span.small', a.name), h('button.icon-btn.sm', { title: 'Delete', onclick: async () => { if (await U.confirm('Delete this upload? Designs using it will show a blank placeholder.', 'Delete', true)) { await S.del('assets', a.id); await dropFromBrand(a.id); render(); } } }, U.ic('trash', 14)))));
+        assets.forEach((a) => grid.append(h('div.upload-card', a.kind === 'image' || (a.kind === 'video' && S.assetURL(a.poster)) ? h('img', { src: S.assetURL(a.kind === 'video' ? a.poster : a.id), alt: a.name }) : h('div.file-ic', U.ic(a.kind === 'audio' ? 'music' : a.kind === 'font' ? 'text' : a.kind === 'video' ? 'video' : 'file', 32)), h('span.small', a.name), h('button.icon-btn.sm', { title: 'Delete', onclick: async () => { if (await U.confirm('Delete this upload? Designs using it will show a blank placeholder.', 'Delete', true)) { await S.del('assets', a.id); await dropFromBrand(a.id); render(); } } }, U.ic('trash', 14)))));
         main.append(grid);
         return;
       }
