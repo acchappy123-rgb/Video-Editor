@@ -490,6 +490,111 @@ export default async function ({ page, step, ctx, url }) {
     ok(Math.abs(u - d.t) < 5000, 'updatedAt was bumped', { u, t: d.t });
   });
 
+  await step('coreB: a value typed in a panel field is committed before a handle drag, and the panel follows drags and nudges (ui-6)', async () => {
+    await open('social');
+    const [rid] = await put([['rect', { x: 100, y: 100, w: 400, h: 300 }]]);
+    await clickEl(rid);
+    await ev(() => { A.P.state.posTab = 'arrange'; A.EU.openPanel('position'); });
+    const fld = (n) => page.locator(`.adv-grid label:has(span:text-is("${n}")) input`);
+    await fld('Width').click({ clickCount: 3 });
+    await page.keyboard.type('450');
+    const hb = await page.locator('.handle.se').boundingBox();
+    await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(hb.x + 80, hb.y + 50, { steps: 6 });
+    await page.mouse.up();
+    const w1 = await ev((i) => A.E.byId(i).w, rid);
+    ok(Math.abs(+(await fld('Width').inputValue()) - w1) < 0.1, 'Width field after the drag', { w1, shown: await fld('Width').inputValue() });
+    // a ticked checkbox keeps focus in the panel; nudges still show
+    await page.click('.ed-panel label.check:has-text("Lock aspect ratio") input');
+    const x0 = await ev((i) => A.E.byId(i).x, rid);
+    for (let k = 0; k < 5; k++) await page.keyboard.press('Shift+ArrowRight');
+    ok(+(await fld('X').inputValue()) === x0 + 50, 'X field after nudges', { x0, shown: await fld('X').inputValue() });
+    const fb = await page.locator('.page-block.active .page-frame').boundingBox();
+    await page.mouse.click(fb.x + fb.width - 20, fb.y + fb.height - 20);
+    const w2 = await ev((i) => A.E.byId(i).w, rid);
+    ok(w2 === w1 && w1 > 450, 'the typed Width overrode the drag', { w1, w2 });
+  });
+
+  await step('coreB: a nudge right before another edit stays its own undo step; undoing a layer move keeps the selection (rank 6)', async () => {
+    await open('social');
+    const [a, b] = await put([['rect', { x: 200, y: 200, w: 200, h: 200, fill: '#ff3131' }], ['rect', { x: 300, y: 300, w: 200, h: 200, fill: '#38b6ff' }]]);
+    const fb = await page.locator('.page-block.active .page-svg').boundingBox(), z = await ev(() => A.E.zoom);
+    await page.mouse.click(fb.x + 230 * z, fb.y + 230 * z);
+    ok((await ev(() => A.E.sel.join())) === a, 'shape A not selected');
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('Delete');
+    await page.keyboard.press('Control+z');
+    ok((await ev((i) => A.E.byId(i)?.x, a)) === 210, 'undoing the delete lost the nudge', await ev((i) => A.E.byId(i)?.x, a));
+    await page.keyboard.press('Control+z');
+    ok((await ev((i) => A.E.byId(i)?.x, a)) === 200, 'second undo did not revert the nudge');
+    await ev(() => { A.P.state.posTab = 'arrange'; A.EU.openPanel('position'); });
+    await page.click('.ed-panel .arr-btn:has-text("Forward")');
+    ok((await ev(() => A.E.els().map((e) => e.id).join())) === [b, a].join(), 'Forward did not reorder');
+    await blur();
+    await page.keyboard.press('Control+z');
+    const r = await ev(() => ({ order: A.E.els().map((e) => e.id).join(), sel: A.E.sel, panel: !!document.querySelector('.ed-panel .arr-grid') }));
+    ok(r.order === [a, b].join() && r.sel.join() === a && r.panel, 'after undoing Forward', r);
+  });
+
+  await step('coreB: locked elements refuse Paste style, Set as background, Group, layer order and Record motion; Ctrl+X hints once (text-13)', async () => {
+    await open('social');
+    const aid = await ev(async () => {
+      const c = document.createElement('canvas'); c.width = 300; c.height = 200;
+      const g = c.getContext('2d'); g.fillStyle = '#2b5876'; g.fillRect(0, 0, 300, 200);
+      return (await A.S.addAsset(await new Promise((r) => c.toBlob(r, 'image/png')), { name: 'locked.png' })).id;
+    });
+    const [green, red, red2] = await put([['rect', { x: 50, y: 50, w: 150, h: 150, fill: '#00aa00' }], ['rect', { x: 300, y: 50, w: 150, h: 150, fill: '#ff0000' }], ['rect', { x: 550, y: 50, w: 150, h: 150, fill: '#ff0000' }]]);
+    const img = await ev((aid) => {
+      const im = A.M.newImage({ id: aid, w: 300, h: 200 }, { x: 300, y: 500, w: 300, h: 200 });
+      A.E.page().elements.push(im);
+      A.E.changed();
+      return im.id;
+    }, aid);
+    await ev(async (i) => { await A.S.ensureAssetURLs([i]); A.E.renderAll(); }, aid);
+    const menu = async (id, label) => {
+      const c = await center(id);
+      await page.mouse.click(c.x, c.y, { button: 'right' });
+      await page.click(`.menu button:has-text("${label}")`);
+    };
+    await menu(green, 'Copy style');
+    await ev(([r, r2, i]) => [r, r2, i].forEach((x) => (A.E.byId(x).locked = true)), [red, red2, img]);
+    await ev(() => A.E.renderAll());
+    await menu(red, 'Paste style');
+    await menu(img, 'Set image as background');
+    await ev(([r, r2]) => A.E.select([r, r2]), [red, red2]);
+    await blur();
+    await page.keyboard.press('Control+g');
+    const order0 = await ev(() => A.E.els().map((e) => e.id).join());
+    await menu(red, 'Bring to front');
+    const r = await ev(([r, r2, i]) => ({ fill: A.E.byId(r).fill, img: !!A.E.byId(i), bg: A.E.page().bg?.asset || null, group: A.E.byId(r).groupId || A.E.byId(r2).groupId || null, order: A.E.els().map((e) => e.id).join() }), [red, red2, img]);
+    ok(r.fill === '#ff0000' && r.img && !r.bg && !r.group && r.order === order0, 'locked elements changed', r);
+    await clickEl(red);
+    await clearToasts();
+    await page.keyboard.press('Control+x');
+    await wait(300);
+    const t = await ev(() => [...document.querySelectorAll('.toast')].map((x) => x.textContent));
+    ok(t.length === 1 && (await ev((i) => !!A.E.byId(i), red)), 'Ctrl+X on a locked element', t);
+    // Record motion on a locked element, then on an unlocked one on a locked page
+    const record = async (what) => {
+      await clickEl(red);
+      await ev(() => A.EU.openPanel('animate'));
+      await page.click('.ed-panel button:has-text("Record motion")');
+      const c = await center(red);
+      await page.mouse.move(c.x, c.y);
+      await page.mouse.down();
+      await page.mouse.move(c.x + 120, c.y + 60, { steps: 8 });
+      await page.mouse.up();
+      const m = await ev((i) => ({ motion: A.E.byId(i).anim?.motion || null, x: A.E.byId(i).x, tool: A.E.tool }), red);
+      ok(!m.motion && m.x === 300 && !m.tool, 'Record motion on ' + what, m);
+    };
+    await record('a locked element');
+    await ev((i) => (A.E.byId(i).locked = false), red);
+    await page.click('.page-block.active button[title="Lock page"]');
+    await record('a locked page');
+    await page.click('.page-block.active button[title="Unlock page"]');
+  });
+
   await step('coreB: Back is not trapped by a trashed design (home-8)', async () => {
     await ev(() => A.app.go('#/templates'));
     await wait(300);

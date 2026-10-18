@@ -590,4 +590,84 @@ export default async function ({ page, step, ctx, url, OUT }) {
     await wait(700);
     ok((await ev(() => window.__act)) === 1 && !(await has('Sticky one')) && !(await has('Sticky two')), 'action or close did not work');
   });
+
+  await step('shell: Tab in the Download dialog reaches every control, Select pages included (home-11)', async () => {
+    await open('presentation');
+    await page.click('.btn.share');
+    await page.click('.share-act:has-text("Download")');
+    await page.waitForSelector('.modal');
+    const seen = [];
+    for (let i = 0; i < 12; i++) {
+      await page.keyboard.press('Tab');
+      seen.push(await ev(() => { const a = document.activeElement; return (a.closest('.modal') ? '' : 'OUT ') + a.tagName + ' ' + (a.textContent || '').trim().slice(0, 20); }));
+    }
+    await page.keyboard.press('Escape');
+    ok(seen.some((x) => x.startsWith('SUMMARY')) && seen.includes('BUTTON Cancel') && seen.includes('BUTTON Download') && !seen.some((x) => x.startsWith('OUT')), 'Tab order', seen);
+    await go('#/home', '.hero');
+  });
+
+  await step('shell: design files and fonts dropped on the canvas are imported; imports load each font once (home-6, home-7)', async () => {
+    await open('social');
+    const json = await ev(async (t) => (await A.S.exportDesignFile(A.M.newDesign({ type: 'social', title: t }))).text(), 'Dropped ' + tag);
+    const file = path.join(OUT, 'shell-drop.atelier.json');
+    fs.writeFileSync(file, json);
+    const designs = () => ev(async () => (await A.S.listDesigns()).length);
+    const n0 = await designs();
+    const cdp = await ctx.newCDPSession(page);
+    const drop = async (f) => {
+      const b = await page.locator('.page-block.active .page-frame').boundingBox();
+      const data = { items: [], files: [path.resolve(f)], dragOperationsMask: 1 };
+      for (const type of ['dragEnter', 'dragOver', 'drop']) await cdp.send('Input.dispatchDragEvent', { type, x: b.x + b.width / 2, y: b.y + b.height / 2, data });
+    };
+    await drop(file);
+    await page.waitForSelector('.toast:has-text("Imported")', { timeout: 5000 });
+    ok((await designs()) === n0 + 1, 'dropped design file not imported', { n0, n: await designs() });
+    await drop('/usr/share/fonts/truetype/crosextra/Caladea-Bold.ttf');
+    await page.waitForFunction(() => A.M.customFonts.some((f) => f.name === 'Caladea Bold'), null, { timeout: 5000 });
+    await cdp.detach();
+    const size = await ev(() => document.fonts.size);
+    for (let i = 0; i < 3; i++) await ev(async (txt) => { const d = await A.app.importFile(new File([txt], 'again.atelier.json', { type: 'application/json' }), { toEditor: true }); await A.S.deleteForever(d.id); }, json);
+    ok((await ev(() => document.fonts.size)) === size, 'imports added FontFaces again', { size, now: await ev(() => document.fonts.size) });
+    const left = await ev(async (t) => {
+      for (const d of await A.S.listDesigns()) if (d.title === t) await A.S.deleteForever(d.id);
+      await A.S.del('assets', A.M.customFonts.find((f) => f.name === 'Caladea Bold').asset);
+      await A.app.loadFonts();
+      return { custom: A.M.customFonts.some((f) => f.name === 'Caladea Bold'), faces: [...document.fonts].some((f) => f.family.replace(/"/g, '') === 'Caladea Bold') };
+    }, 'Dropped ' + tag);
+    ok(!left.custom && !left.faces, 'a deleted font stayed loaded', left);
+    await go('#/home', '.hero');
+  });
+
+  await step('shell: a crafted design file or backup cannot break startup, Home or search (home-6)', async () => {
+    const fid = 'a_font_' + tag;
+    const design = { title: 7, type: 'social', width: 1080, height: 1080, pages: [{ title: 5, elements: [] }] };
+    const assets = [{ id: fid, kind: 'font', name: 5, blob: 'data:font/ttf;base64,AAAA' }, { id: 'a bad"id', kind: 'image', name: 'x', blob: 'data:image/png;base64,AAAA' }, { id: 'a_noblob_' + tag, kind: 'image', blob: 5 }];
+    const file = path.join(OUT, 'shell-crafted.atelier.json');
+    fs.writeFileSync(file, JSON.stringify({ app: 'atelier-design', version: 1, design, assets }));
+    const kv0 = await ev(async () => ({ profile: await A.S.get('kv', 'profile'), notifications: await A.S.get('kv', 'notifications') }));
+    let did;
+    try {
+      await go('#/home', '.hero');
+      await pick(() => page.click('.type-btn:has-text("Upload")'), file);
+      await page.waitForFunction(() => A.E.d?.title === '7' && document.querySelector('.page-svg'));
+      did = await ev(() => A.E.d.id);
+      const st = await ev(async (fid) => ({ font: (await A.S.get('assets', fid))?.name, bad: (await A.S.all('assets')).filter((a) => !/^[\w-]+$/.test(a.id) || !(a.blob instanceof Blob)).length, page: A.E.d.pages[0].title }), fid);
+      ok(st.font === '5' && !st.bad && st.page === '5', 'imported assets or titles not cleaned', st);
+      await ev(() => A.S.importBackup({ app: 'atelier', version: 1, kv: [{ key: 'profile', value: { name: 5 } }, { key: 'notifications', value: 'x' }, { key: 'toString', value: 1 }] }));
+      await go('#/home', '.hero');
+      await page.reload();
+      await page.waitForSelector('.hero', { timeout: 10000 });
+      await page.fill('.hero-input', '7');
+      await wait(150);
+      const res = await ev(() => [...document.querySelectorAll('.hero-results .result')].map((r) => r.textContent));
+      ok(res.some((x) => x.includes('7')), 'search for the imported design', res);
+      await page.fill('.hero-input', '');
+    } finally {
+      await ev(async ([kv0, fid, did]) => {
+        for (const k of ['profile', 'notifications']) await (kv0[k] ? A.S.put('kv', kv0[k]) : A.S.del('kv', k));
+        await A.S.del('assets', fid);
+        if (did) await A.S.deleteForever(did);
+      }, [kv0, fid, did]);
+    }
+  });
 }

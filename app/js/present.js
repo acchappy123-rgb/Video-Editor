@@ -89,8 +89,10 @@
     if (opts.fullscreen !== false && !presenter) toggleFS();
 
     let layer = null;
-    // a slide moved on by hand stays up as long as the presenter likes, so its exit animations don't play
-    const svgFor = (page, t, idp, links = true) => R.pageSVG(d, page, { t, idp, links, width: d.width, dur: autoplay ? undefined : null });
+    // a slide moved on by hand stays up as long as the presenter likes, so its exit animations don't play;
+    // with autoplay they end when the countdown moves on (turning it on mid-slide restarts only the countdown)
+    const exitAt = (page) => (autoplay ? (tAuto - t0) / 1000 + (page.duration || 5) : null);
+    const svgFor = (page, t, idp, links = true) => R.pageSVG(d, page, { t, idp, links, width: d.width, dur: exitAt(page) });
     const mount = (dir) => {
       const page = pages[idx];
       const nl = h('div.pr-layer', { html: svgFor(page, 0, 'pr' + idx + '_') });
@@ -205,7 +207,7 @@
       const draw = async () => {
         while (running) {
           const t = (performance.now() - t0) / 1000;
-          const svg = R.pageSVG(d, pages[idx], { t, asset: (id) => map[id] || '', fontCSS, idp: 'rc', dur: autoplay ? undefined : null });
+          const svg = R.pageSVG(d, pages[idx], { t, asset: (id) => map[id] || '', fontCSS, idp: 'rc', dur: exitAt(pages[idx]) });
           try { await R.pageCanvas(d, pages[idx], scale, { svg, canvas, matte: '#fff' }); } catch (e) {}
           if (cam.videoWidth) {
             const s = canvas.height * 0.26, x = canvas.width - s - 20, y = canvas.height - s - 20;

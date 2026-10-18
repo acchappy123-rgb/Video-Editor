@@ -1681,7 +1681,7 @@
         E.d.audio = a.id;
         E.changed({ all: true });
         U.toast('Audio added to the design');
-      }
+      } else await A.app.importFile(f, { toEditor: true });
     }
     const tplData = e.dataTransfer?.getData('application/x-atelier');
     if (tplData) A.EU.dropItem(JSON.parse(tplData), e);

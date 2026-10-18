@@ -175,15 +175,23 @@ export default async function ({ page, step }) {
       const broken = [];
       for (const el of [M.newText({ text: '🚀 Go 👍🏽', anim: { in: 'typewriter' } }), M.newText({ text: '🚀🚀🚀', curve: 40, anim: { in: 'typewriter' } })])
         for (let t = 0; t < 2; t += 0.02) { const s = raw(el, R.anim(el, t, 5, 0, null).chars); if (lone.test(s)) broken.push(escape(s.replace(/<[^>]*>/g, ''))); }
+      // flags, skin tones and family emoji appear whole, never one code point at a time
+      const full = 'Go 🇫🇷 👍🏽 👨‍👩‍👧 é', ends = new Set([0]);
+      let n = 0;
+      for (const g of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(full)) ends.add((n += g.segment.length));
+      const split = [];
+      for (const el of [M.newText({ text: full, anim: { in: 'typewriter' } }), M.newText({ text: full, curve: 40, anim: { in: 'typewriter' } })])
+        for (let t = 0; t < 2; t += 0.01) { const s = lines(el, R.anim(el, t, 5, 0, null).chars).join('').trim(); if (!full.startsWith(s) || !ends.has(s.length)) split.push(s); }
       return {
         bullet: [at(bullet, 4.9), lines(bullet, null)], number: [at(number, 4.9), lines(number, null)], bullet100: at(bullet, 100),
-        partial: lines(bullet, 6), broken,
+        partial: lines(bullet, 6), broken, split,
       };
     });
     ok(JSON.stringify(r.bullet[0]) === JSON.stringify(r.bullet[1]) && JSON.stringify(r.bullet100) === JSON.stringify(r.bullet[1]), 'bullet list never finishes', r.bullet);
     ok(JSON.stringify(r.number[0]) === JSON.stringify(r.number[1]), 'numbered list never finishes', r.number);
     ok(JSON.stringify(r.partial) === JSON.stringify(['•  Alpha', '•  B', ' ']), 'bullet should appear with its first character', r.partial);
     ok(!r.broken.length, 'frames with half a surrogate pair', r.broken.slice(0, 3));
+    ok(!r.split.length, 'frames with part of an emoji', [...new Set(r.split)].slice(0, 4));
     // in present mode the whole list appears
     await open('presentation', [{ type: 'text', id: 'tw', text: 'Alpha\nBeta\nGamma', list: 'bullet', x: 200, y: 200, w: 800, size: 60, anim: { in: 'typewriter' } }]);
     await ev(() => A.Present.start({ fullscreen: false, autoplay: false }));
@@ -212,6 +220,8 @@ export default async function ({ page, step }) {
         errs: [E([['=1/0', '=A1+5']], 0, 1), E([['=1/0', '2', '=SUM(A1:B1)']], 0, 2), E([['=X', '=A1*2']], 0, 1)],
         plain: [E([['Head'], ['2'], ['3'], ['=SUM(A1:A3)']], 3, 0), E([['abc', '=A1+1']], 0, 1), E([['=1E2+1']], 0, 0), E([['#1 seller', '=A1+1']], 0, 1)],
         cols: [0, 25, 26, 27, 51, 52, 701, 702].map(R.colName), wide: E(wide, 0, 27),
+        // a range far past the table costs no more than the table
+        huge: (() => { const t = performance.now(), v = [E([['1', '2'], ['3', '=SUM(A1:A100000000)']], 1, 1), E([['1', '2'], ['=SUM(B1:ZZZ99999)', '5']], 1, 0)]; return { v, ms: performance.now() - t }; })(),
       };
     });
     ok(r.calls < r.cellCount * 4, 'formulas re-evaluated per reference', { calls: r.calls, cells: r.cellCount });
@@ -220,6 +230,7 @@ export default async function ({ page, step }) {
     ok(JSON.stringify(r.errs) === JSON.stringify(['#DIV/0', '#DIV/0', '#ERR']), 'errors not passed on', r.errs);
     ok(JSON.stringify(r.plain) === JSON.stringify(['5', '1', '101', '1']), 'ordinary formulas changed', r.plain);
     ok(JSON.stringify(r.cols) === JSON.stringify(['A', 'Z', 'AA', 'AB', 'AZ', 'BA', 'ZZ', 'AAA']) && r.wide === '10', 'column names past Z', r);
+    ok(r.huge.v.join() === '4,7' && r.huge.ms < 100, 'huge range', r.huge);
   });
 
   await step('render: charts draw negative values, tiny sizes and a see-through donut hole (render-4, render-25, render-19)', async () => {

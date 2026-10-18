@@ -144,13 +144,16 @@
   const fresh = (id, prefix, map) => (typeof id === 'string' && ID.test(id) ? id : id == null ? A.U.uid(prefix) : (map[id] ||= A.U.uid(prefix)));
   const NUMS = ['x', 'y', 'w', 'h', 'rot', 'opacity', 'nw', 'nh', 'votes', 'strokeWidth', 'size', 'radius', 'lh', 'spacing'];
   const nums = (o, keys) => o && typeof o === 'object' && keys.forEach((k) => o[k] != null && typeof o[k] !== 'number' && (o[k] = +o[k] || 0));
+  const str = (o, k, def = '') => (o[k] = o[k] == null ? def : String(o[k]));
   S.cleanDesign = (d) => {
     nums(d, ['width', 'height', 'createdAt', 'updatedAt']);
+    str(d, 'title', 'Untitled design');
     const pm = {}, em = {}, gm = {};
     d.pages = (Array.isArray(d.pages) ? d.pages : []).filter((p) => p && typeof p === 'object');
     for (const p of d.pages) {
       p.id = fresh(p.id, 'p_', pm);
       nums(p, ['duration']);
+      if (p.title != null) str(p, 'title');
       p.elements = (Array.isArray(p.elements) ? p.elements : []).filter((el) => el && typeof el === 'object');
       for (const el of p.elements) {
         el.id = fresh(el.id, 'e_', em);
@@ -168,6 +171,40 @@
     }
     return d;
   };
+  // Assets keep a plain id, string names, a known kind and a blob from a data URL; anything else is left out.
+  const KINDS = ['image', 'audio', 'video', 'font', 'file'];
+  const cleanAsset = (a) => {
+    if (!a || typeof a !== 'object' || typeof a.id !== 'string' || !ID.test(a.id) || typeof a.blob !== 'string' || !a.blob.startsWith('data:')) return null;
+    try {
+      const blob = A.U.dataURLToBlob(a.blob);
+      const out = { ...a, blob, type: blob.type, kind: KINDS.includes(a.kind) ? a.kind : kindOf(blob.type), hidden: !!a.hidden };
+      str(out, 'name', 'upload');
+      str(out, 'tag');
+      nums(out, ['w', 'h', 'createdAt']);
+      return out;
+    } catch (e) {
+      return null;
+    }
+  };
+  const putAssets = async (list) => {
+    for (const a of Array.isArray(list) ? list : []) {
+      const c = cleanAsset(a);
+      if (c) await S.put('assets', c);
+    }
+  };
+  // Backup settings are kept only for the keys the app reads, in the shape it reads them.
+  const obj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+  const objs = (v) => Array.isArray(v) && v.every(obj);
+  const strs = (v) => v == null || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
+  const KV = {
+    settings: (v) => obj(v) && strs(v.recentColors),
+    brand: (v) => obj(v) && ['colors', 'logos', 'photos', 'icons'].every((k) => strs(v[k])) && (v.fonts == null || obj(v.fonts)),
+    profile: (v) => obj(v) && typeof v.name === 'string',
+    notifications: objs,
+    planner: objs,
+    userTemplates: objs,
+    welcomed: (v) => typeof v === 'boolean',
+  };
 
   // ---------- full backup ----------
   // Everything except the API key.
@@ -180,12 +217,13 @@
   S.importBackup = async (json) => {
     if (json.app !== 'atelier') throw new Error('Not an Atelier backup file');
     const dm = {};
-    for (const a of json.assets || []) await S.put('assets', { ...a, blob: A.U.dataURLToBlob(a.blob) });
+    await putAssets(json.assets);
     for (const d of json.designs || []) {
+      if (!obj(d)) continue;
       d.id = fresh(d.id, 'd_', dm);
       await S.put('designs', S.cleanDesign(d));
     }
-    for (const f of json.folders || []) await S.put('folders', f);
+    for (const f of json.folders || []) if (obj(f) && typeof f.id === 'string' && ID.test(f.id)) await S.put('folders', { ...f, name: String(f.name ?? 'Folder') });
     for (const v of json.versions || []) {
       try {
         v.designId = fresh(v.designId, 'd_', dm);
@@ -197,6 +235,7 @@
       await S.put('versions', v);
     }
     for (const k of json.kv || []) {
+      if (!obj(k) || !Object.hasOwn(KV, k.key) || !KV[k.key](k.value)) continue;
       // the key on this device is kept; one in the file is ignored
       if (k.key === 'settings') k.value = { ...k.value, apiKey: (await S.kv('settings', {})).apiKey };
       if (k.key === 'userTemplates' && Array.isArray(k.value)) for (const t of k.value) t.design && S.cleanDesign(t.design);
@@ -231,7 +270,7 @@
   };
   S.importDesignFile = async (json) => {
     if (json.app !== 'atelier-design' || !json.design || typeof json.design !== 'object') throw new Error('Not an Atelier design file');
-    for (const a of json.assets || []) await S.put('assets', { ...a, blob: A.U.dataURLToBlob(a.blob) });
+    await putAssets(json.assets);
     const d = S.cleanDesign(json.design);
     d.id = A.U.uid('d_');
     d.createdAt = Date.now();

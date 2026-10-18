@@ -33,19 +33,28 @@
   };
 
   // ---------- fonts ----------
+  // One FontFace per font asset: a reload decodes only new fonts and drops those whose asset is gone.
+  // A bad font asset (an imported file is untrusted) is skipped, never allowed to stop startup.
+  const faces = new Map(); // asset id -> { ff, name }, null for a font that failed
   app.loadFonts = async () => {
     const fonts = await S.listAssets('font');
+    for (const [id, f] of faces) if (!fonts.some((a) => a.id === id)) { f && document.fonts.delete(f.ff); faces.delete(id); }
     M.customFonts = [];
     for (const a of fonts) {
-      const name = a.tag || a.name.replace(/\.[^.]+$/, '');
-      try {
-        const ff = new FontFace(name, await a.blob.arrayBuffer());
-        await ff.load();
-        document.fonts.add(ff);
-        M.customFonts.push({ name, asset: a.id });
-      } catch (e) {
-        console.warn('Font failed to load', a.name, e);
+      if (!faces.has(a.id)) {
+        try {
+          const name = String(a.tag || String(a.name || 'Font').replace(/\.[^.]+$/, ''));
+          const ff = new FontFace(name, await a.blob.arrayBuffer());
+          await ff.load();
+          document.fonts.add(ff);
+          faces.set(a.id, { ff, name });
+        } catch (e) {
+          faces.set(a.id, null);
+          console.warn('Font failed to load', a.name, e);
+        }
       }
+      const f = faces.get(a.id);
+      if (f) M.customFonts.push({ name: f.name, asset: a.id });
     }
   };
 

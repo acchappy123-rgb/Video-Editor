@@ -13,6 +13,13 @@
   };
   const svgThumb = (inner, vb = '0 0 100 100') => h('span.el-thumb', { html: `<svg viewBox="${vb}" width="100%" height="100%">${inner}</svg>` });
   const sel1 = () => E.selEls()[0];
+  // page edits made from a panel respect the page lock
+  const setBg = (patch) => {
+    if (!E.canEdit()) return false;
+    E.page().bg = { ...(E.page().bg || {}), ...patch };
+    E.changed();
+    return true;
+  };
   const state = (P.state = { designTab: 'templates', elQuery: '', iconColor: '#1a1a1a', uploadsTab: 'images', imgTab: 'filters', posTab: 'arrange', animTab: null, aiChat: [], app: null });
 
   // ---------- Design (templates & styles) ----------
@@ -38,7 +45,7 @@
       body.append(section('Colour palettes', h('div.palette-list', M.STYLE_PALETTES.map(([name, cols]) => h('button.palette', { title: 'Apply ' + name + ' colours to this page', onclick: () => recolor(cols) }, h('div.pal-cols', cols.map((c) => h('span', { style: { background: c } }))), h('span', name))))));
       if (A.app.brand?.colors?.length) body.append(section('Brand colours', h('button.palette', { onclick: () => recolor(A.app.brand.colors) }, h('div.pal-cols', A.app.brand.colors.slice(0, 6).map((c) => h('span', { style: { background: c } }))), h('span', 'Apply brand palette'))));
       body.append(section('Font sets', h('div.font-sets', M.FONT_PAIRS.map(([hf, bf, name]) => h('button.font-set', { onclick: () => applyFonts(hf, bf) }, h('b', { style: { fontFamily: M.fontStack(hf) } }, name), h('span', { style: { fontFamily: M.fontStack(bf) } }, hf + ' & ' + bf))))));
-      body.append(section('Background', h('div.bg-grid', ['#ffffff', '#f5efe6', '#111111', '#0a3d62', '#ffde59', '#ff66c4', 'grad:#8c52ff:#ff66c4:135', 'grad:#00c6ff:#0072ff:135', 'grad:#11998e:#38ef7d:135', 'grad:#f7971e:#ffd200:135', 'grad:#232526:#414345:135', 'grad:#fbc2eb:#a6c1ee:135'].map((c) => h('button.bg-sw', { style: { background: R.cssPaint(c) }, onclick: () => { E.page().bg = { ...(E.page().bg || {}), color: c }; E.changed(); } })))));
+      body.append(section('Background', h('div.bg-grid', ['#ffffff', '#f5efe6', '#111111', '#0a3d62', '#ffde59', '#ff66c4', 'grad:#8c52ff:#ff66c4:135', 'grad:#00c6ff:#0072ff:135', 'grad:#11998e:#38ef7d:135', 'grad:#f7971e:#ffd200:135', 'grad:#232526:#414345:135', 'grad:#fbc2eb:#a6c1ee:135'].map((c) => h('button.bg-sw', { style: { background: R.cssPaint(c) }, onclick: () => setBg({ color: c }) })))));
     }
     return { title: 'Design', body };
   };
@@ -59,6 +66,7 @@
     });
   });
   async function insertTemplate(t, replace) {
+    if (replace && !E.canEdit()) return;
     const td = t.design ? U.clone(t.design) : A.templateDesign(t);
     if (td.width !== E.d.width || td.height !== E.d.height) E.resizeDesign(td, E.d.width, E.d.height);
     freshIds(td.pages);
@@ -72,6 +80,7 @@
     E.changed({ structure: true });
   }
   function recolor(palette) {
+    if (!E.canEdit()) return;
     const page = E.page();
     const counts = {};
     const bump = (c) => U.isColor(c) && (counts[c.toLowerCase()] = (counts[c.toLowerCase()] || 0) + 1);
@@ -83,12 +92,13 @@
     order.forEach((c, i) => (map[c] = U.luminance(c) > 0.85 ? light[0] : U.luminance(c) < 0.12 ? light[light.length - 1] : palette[i % palette.length]));
     const sw = (c) => (U.isColor(c) && map[c.toLowerCase()]) || c;
     if (page.bg) page.bg.color = sw(page.bg.color);
-    page.elements.forEach((e) => { if (e.fill) e.fill = sw(e.fill); if (e.color) e.color = sw(e.color); if (e.stroke) e.stroke = sw(e.stroke); });
+    page.elements.forEach((e) => { if (e.locked) return; if (e.fill) e.fill = sw(e.fill); if (e.color) e.color = sw(e.color); if (e.stroke) e.stroke = sw(e.stroke); });
     // keep text readable on its background
     E.changed();
   }
   function applyFonts(hf, bf) {
-    const texts = E.els().filter((e) => e.type === 'text' || (e.type === 'shape' && e.text));
+    if (!E.canEdit()) return;
+    const texts = E.els().filter((e) => !e.locked && (e.type === 'text' || (e.type === 'shape' && e.text)));
     if (!texts.length) return U.toast('No text on this page yet');
     const max = Math.max(...texts.map((e) => e.size));
     texts.forEach((e) => { e.font = e.size >= max * 0.6 ? hf : bf; if (e.type === 'text') R.fitText(e); });
@@ -128,7 +138,7 @@
       if (match('chart graph data bar pie line')) content.append(section('Charts', h('div.el-grid', [['bar', 'Bar'], ['line', 'Line'], ['area', 'Area'], ['pie', 'Pie'], ['donut', 'Donut']].map(([k, n]) => h('button.el-item', { title: n + ' chart', onclick: () => E.add(M.newChart(k, { w: W * 0.5, h: W * 0.35 })) }, svgThumb(chartThumb(k)))))));
       if (match('table grid data spreadsheet')) content.append(section('Tables', h('div.el-grid', [[3, 3], [4, 3], [5, 4], [6, 2]].map(([r, c]) => h('button.el-item', { title: `${r}×${c} table`, onclick: () => E.add(M.newTable(r, c, { w: W * 0.5, h: r * W * 0.04, size: Math.max(12, W / 70) })) }, h('span.small', `${r} × ${c}`))))));
       if (match('mockup phone laptop device browser')) content.append(section('Mockups', h('div.el-grid', [['phone', 'Phone'], ['laptop', 'Laptop'], ['browser', 'Browser']].map(([k, n]) => h('button.el-item', { title: n + ' mockup', onclick: () => addMockup(k) }, h('span.small', n))))));
-      if (match('background gradient pattern')) content.append(section('Backgrounds', h('div.bg-grid', ['grad:#8c52ff:#ff66c4:135', 'grad:#00c6ff:#0072ff:135', 'grad:#f7971e:#ffd200:135', 'grad:#11998e:#38ef7d:135', 'grad:#ee0979:#ff6a00:135', 'grad:#fbc2eb:#a6c1ee:135', 'grad:#ffffff:#c3cfe2:0:radial', 'grad:#141e30:#243b55:135'].map((c) => h('button.bg-sw', { style: { background: R.cssPaint(c) }, onclick: () => { E.page().bg = { ...(E.page().bg || {}), color: c }; E.changed(); } })))));
+      if (match('background gradient pattern')) content.append(section('Backgrounds', h('div.bg-grid', ['grad:#8c52ff:#ff66c4:135', 'grad:#00c6ff:#0072ff:135', 'grad:#f7971e:#ffd200:135', 'grad:#11998e:#38ef7d:135', 'grad:#ee0979:#ff6a00:135', 'grad:#fbc2eb:#a6c1ee:135', 'grad:#ffffff:#c3cfe2:0:radial', 'grad:#141e30:#243b55:135'].map((c) => h('button.bg-sw', { style: { background: R.cssPaint(c) }, onclick: () => setBg({ color: c }) })))));
       if (!content.children.length) content.append(h('p.muted', 'No elements match "' + q + '".'));
     };
     const sb = searchBox('Search elements', render);
@@ -238,7 +248,7 @@
   };
   function applyColor(c) {
     const els = E.selEls();
-    if (!els.length) { E.page().bg = { ...(E.page().bg || {}), color: c }; return E.changed(); }
+    if (!els.length) return setBg({ color: c });
     EU.apply((x) => {
       if (x.type === 'text') x.color = c;
       else if (x.type === 'line' || x.type === 'draw') x.stroke = c;
@@ -290,7 +300,10 @@
   }
   function useImage(a, mode) {
     const el = sel1();
-    if (mode === 'background') { E.page().bg = { ...(E.page().bg || {}), asset: a.id }; E.changed(); return EU.openPanel('uploads'); }
+    if (mode === 'background') return setBg({ asset: a.id }) && EU.openPanel('uploads');
+    // replacing a photo or filling a frame edits that element, so its lock and the page lock apply
+    const swap = el && ((mode === 'replace' && el.type === 'image') || (el.type === 'shape' && (el.frame || mode === 'frame')));
+    if (swap && !E.editEls().includes(el)) return;
     if (mode === 'replace' && el?.type === 'image') { el.asset = a.id; el.nw = a.w; el.nh = a.h; el.crop = { x: 0, y: 0, w: 1, h: 1 }; el.h = el.w * (a.h / a.w); E.changed(); return EU.openPanel('uploads'); }
     if (el && el.type === 'shape' && (el.frame || mode === 'frame')) { el.asset = a.id; el.frame = true; E.changed(); return; }
     E.addImageAsset(a);
@@ -358,7 +371,7 @@
       [a, b, ang, kind].forEach((x) => x.addEventListener('input', upd));
       upd();
       return h('div', prev, h('div.row', a, b, kind), h('label.field', h('span', 'Angle'), ang),
-        h('button.btn.primary.full', { onclick: () => { E.page().bg = { ...(E.page().bg || {}), color: `grad:${a.value}:${b.value}:${ang.value}:${kind.value}` }; E.changed(); } }, 'Set as background'),
+        h('button.btn.primary.full', { onclick: () => setBg({ color: `grad:${a.value}:${b.value}:${ang.value}:${kind.value}` }) }, 'Set as background'),
         h('button.btn.full', { onclick: async () => { const blob = await A.I.gradientBlob(a.value, b.value, +ang.value, 1200, 1200, kind.value); E.addImageAsset(await S.addAsset(blob, { name: 'Gradient' })); } }, 'Add as image'));
     }
     if (id === 'pattern') {
@@ -371,7 +384,7 @@
       upd();
       const make = async () => S.addAsset(await A.I.patternBlob(kind.value, fg.value, bg.value, +sc.value * Math.max(1, W / 1080), Math.round(W), Math.round(H)), { name: 'Pattern' });
       return h('div', img, h('label.field', h('span', 'Pattern'), kind), h('div.row', h('span', 'Colours'), fg, bg), h('label.field', h('span', 'Scale'), sc),
-        h('button.btn.primary.full', { onclick: async () => { const a = await make(); await S.ensureAssetURLs([a.id]); E.page().bg = { ...(E.page().bg || {}), asset: a.id }; E.changed(); } }, 'Set as background'),
+        h('button.btn.primary.full', { onclick: async () => { if (!E.canEdit()) return; const a = await make(); await S.ensureAssetURLs([a.id]); setBg({ asset: a.id }); } }, 'Set as background'),
         h('button.btn.full', { onclick: async () => E.addImageAsset(await make()) } , 'Add as image'));
     }
     if (id === 'palette') {
@@ -557,7 +570,12 @@
         const field = (label, key, fn) => {
           const inp = h('input.input', { type: 'number', value: shown(key) });
           // the panel isn't rebuilt while it is in use, so the other fields (Height after Width) are updated here
-          inp.addEventListener('change', () => { fn(+inp.value); E.changed(); fields.forEach(([k, x]) => x !== inp && (x.value = shown(k))); });
+          // a locked element or page refuses the value, and the field shows the real one again
+          inp.addEventListener('change', () => {
+            const free = E.editEls().includes(el);
+            if (free) { fn(+inp.value); E.changed(); }
+            fields.forEach(([k, x]) => (x !== inp || !free) && (x.value = shown(k)));
+          });
           fields.push([key, inp]);
           return h('label.field.half', h('span', label), inp);
         };
@@ -576,14 +594,15 @@
         const row = h('div.layer' + (E.sel.includes(el.id) ? '.on' : ''), { draggable: 'true', onclick: (e) => E.select([el.id], e.shiftKey) },
           h('span.layer-thumb', { html: `<svg viewBox="${Math.round(el.x)} ${Math.round(el.y)} ${Math.max(1, Math.round(el.w))} ${Math.max(1, Math.round(el.h))}" width="40" height="30"><defs>${ctx.defs.join('')}</defs>${inner}</svg>` }),
           h('span.layer-name', layerName(el)),
-          h('button.icon-btn.sm', { title: el.hidden ? 'Show' : 'Hide', onclick: (e) => { e.stopPropagation(); el.hidden = !el.hidden; E.changed(); EU.renderPanel(); } }, U.ic(el.hidden ? 'eyeoff' : 'eye', 14)),
-          h('button.icon-btn.sm', { title: el.locked ? 'Unlock' : 'Lock', onclick: (e) => { e.stopPropagation(); el.locked = !el.locked; E.changed(); EU.renderPanel(); } }, U.ic(el.locked ? 'lock' : 'unlock', 14))
+          h('button.icon-btn.sm', { title: el.hidden ? 'Show' : 'Hide', onclick: (e) => { e.stopPropagation(); if (!E.canEdit()) return; el.hidden = !el.hidden; E.changed(); EU.renderPanel(); } }, U.ic(el.hidden ? 'eyeoff' : 'eye', 14)),
+          h('button.icon-btn.sm', { title: el.locked ? 'Unlock' : 'Lock', onclick: (e) => { e.stopPropagation(); if (!E.canEdit()) return; el.locked = !el.locked; E.changed(); EU.renderPanel(); } }, U.ic(el.locked ? 'lock' : 'unlock', 14))
         );
         row.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/x-layer', el.id));
         row.addEventListener('dragover', (e) => e.preventDefault());
         row.addEventListener('drop', (e) => {
           e.preventDefault();
           const id = e.dataTransfer.getData('text/x-layer');
+          if (!E.canEdit()) return;
           const arr = E.els();
           const from = arr.findIndex((x) => x.id === id), to = arr.findIndex((x) => x.id === el.id);
           if (from < 0 || from === to) return;

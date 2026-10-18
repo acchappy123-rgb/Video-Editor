@@ -16,6 +16,8 @@
     root.innerHTML = '';
     A.app.view = 'editor';
     const d = E.d;
+    // an earlier session's save warning stays (it holds that session's edits), reworded so it isn't taken for this one's
+    if (EU.saveErr?.isConnected) EU.saveErr.firstChild.nodeValue = 'Earlier changes to “' + EU.saveErr.design + '” could not be saved. Download a copy to keep them.';
     EU.saveErr = null;
     EU.saveIcon = h('span.save-state', { title: 'All changes saved' }, U.ic('cloudok', 20));
     EU.undoBtn = h('button.icon-btn', { title: 'Undo (Ctrl+Z)', onclick: () => E.undo() }, U.ic('undo'));
@@ -103,11 +105,13 @@
     // one sticky warning per run of failed saves, offering a way to keep the work
     if (s === 'saved') { EU.saveErr?.remove?.(); EU.saveErr = null; }
     if (s !== 'error' || EU.saveErr) return;
-    const d = E.d;
+    // the live design while its session lasts (an undo replaces E.d), else the copy that failed to save
+    const d = E.d, icon = EU.saveIcon;
     EU.saveErr = U.toast('Your changes could not be saved – storage may be full. Download a copy to keep them.', 'error', {
       sticky: true,
-      action: { label: 'Download design file', onClick: async () => { const x = E.d?.id === d.id ? E.d : d; U.download(await S.exportDesignFile(x), U.safeName(x.title) + '.atelier.json'); } },
-    }) || true;
+      action: { label: 'Download design file', onClick: async () => { const x = EU.saveIcon === icon && E.d?.id === d.id ? E.d : d; U.download(await S.exportDesignFile(x), U.safeName(x.title) + '.atelier.json'); } },
+    });
+    EU.saveErr.design = d.title;
   };
   EU.refreshUndo = () => {
     if (!EU.undoBtn) return;

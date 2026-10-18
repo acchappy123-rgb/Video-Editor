@@ -171,6 +171,45 @@ export default async function ({ page, step }) {
     await exit();
   });
 
+  await step('present: a "#intro" link neither leaves the open design nor opens a tab (render-11, present-10)', async () => {
+    await open('presentation', { n: 2, els: [[{ id: 'lnkx', x: 1300, y: 600, w: 400, h: 300, link: '#intro' }]] });
+    await ev(() => A.E.setPage(0));
+    const s0 = await ev(() => ({ hash: location.hash, id: A.E.d.id })), tabs = page.context().pages().length;
+    await present();
+    await page.mouse.click(...(await center('.pr-layer [data-id="lnkx"]')));
+    await wait(400);
+    const s = await ev(() => ({ hash: location.hash, id: A.E.d?.id, view: A.app.view, present: !!document.querySelector('.present') }));
+    ok(s.hash === s0.hash && s.id === s0.id && s.view === 'editor' && s.present && page.context().pages().length === tabs, 'after the #intro link', { s0, s });
+    await exit();
+  });
+
+  await step('present: Autoplay turned on after the page time keeps exit-animated content up until the advance (render-22, present-13)', async () => {
+    await open('presentation', { n: 2, dur: 2, els: [[{ type: 'text', id: 'fo', text: 'Fades out', x: 200, y: 400, w: 800, h: 120, size: 90, anim: { out: 'fade' } }]] });
+    await ev(() => A.E.setPage(0));
+    await present();
+    await wait(2600);
+    await page.click('.pr-btn[title="Autoplay"]');
+    const op = () => ev(() => [...document.querySelectorAll('.pr-layer [data-id="fo"]')].pop()?.getAttribute('opacity'));
+    const samples = [];
+    for (let k = 0; k < 4; k++) { await wait(250); samples.push([await count(), await op()]); }
+    ok(samples.every(([c, o]) => c === '1 / 2' && (o === null || +o > 0.99)), 'content blanked before the advance', samples);
+    await page.waitForFunction(() => document.querySelector('.pr-count').textContent === '2 / 2', null, { timeout: 2500 });
+    await exit();
+  });
+
+  await step('present: with the mouse at rest, the first click on a faded-out control works (touch-8)', async () => {
+    await open('presentation', { n: 3 });
+    await ev(() => A.E.setPage(0));
+    await present();
+    await page.mouse.move(...(await center('.pr-btn[title^="Next"]')));
+    await page.waitForSelector('.present.idle', { timeout: 4000 });
+    await page.mouse.down();
+    await page.mouse.up();
+    await wait(150);
+    ok((await count()) === '2 / 3', 'the click on the hidden Next was lost', await count());
+    await exit();
+  });
+
   // ---------- phones ----------
   const phone = async (w, hgt, fn) => {
     const ctx = await page.context().browser().newContext({ viewport: { width: w, height: hgt }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
@@ -235,6 +274,11 @@ export default async function ({ page, step }) {
       await open('presentation', { n: 3 }, p);
       const l = await layout(p);
       ok(l.tbTop >= l.topBottom && l.ch > 100, w + 'x' + hgt + ' toolbar or canvas', l);
+      // pages stay reachable: the timeline switches them, and the bottom bar keeps Notes and the page grid
+      await p.tap('.tl-block >> nth=2');
+      await p.waitForTimeout(200);
+      ok((await p.evaluate(() => A.E.pi)) === 2, w + 'x' + hgt + ' timeline did not switch the page');
+      ok((await p.isVisible('.ed-bottom .page-info')) && (await p.isVisible('.ed-bottom button:has-text("Notes")')), w + 'x' + hgt + ' bottom bar hidden');
     });
   });
 

@@ -535,7 +535,9 @@ body.tool-motion .page-frame { cursor: move; }
 .pr-notes { white-space: pre-wrap; font-size: 15px; line-height: 1.5; flex: 1; }
 .pr-clock { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .pr-bar { position: fixed; left: 0; right: 0; bottom: 18px; margin: 0 auto; width: max-content; display: flex; gap: 4px; align-items: center; background: rgba(30, 30, 36, .92); color: #fff; border-radius: 12px; padding: 6px; transition: opacity .3s; z-index: 2; flex-wrap: wrap; justify-content: center; max-width: 96vw; }
-.present.idle .pr-bar { opacity: 0; pointer-events: none; }
+.present.idle .pr-bar { opacity: 0; }
+/* a tap on hidden controls only brings them back; a mouse click still reaches them */
+@media (hover: none) { .present.idle .pr-bar { pointer-events: none; } }
 .present.idle { cursor: none; }
 .pr-btn { display: inline-flex; align-items: center; gap: 4px; height: 34px; padding: 0 10px; border-radius: 8px; color: #fff; font-size: 13px; }
 .pr-btn:hover { background: rgba(255, 255, 255, .12); }
@@ -602,9 +604,22 @@ body.tool-motion .page-frame { cursor: move; }
   .modal-back { padding: 0; align-items: flex-end; }
   .modal { border-radius: 16px 16px 0 0; max-height: 92vh; }
 }
-/* landscape phones: the canvas gets the height of the timeline and bottom bar */
+/* landscape phones: the rail goes back to the side and panels open beside the canvas; a one-row timeline and a
+   slim bottom bar leave the canvas its height and keep pages in reach */
 @media (max-width: 760px) and (max-height: 500px) {
-  .ed-timeline, .ed-bottom { display: none; }
+  .ed-body { flex-direction: row; }
+  .ed-rail { width: 64px; height: auto; flex-direction: column; border-top: 0; border-right: 1px solid var(--border); padding: 4px 0; overflow-x: hidden; overflow-y: auto; }
+  .rail-btn { padding: 6px 0; }
+  .panel-wrap { width: 0 !important; height: auto; transition: width .18s; }
+  body.panel-open .panel-wrap { width: 300px !important; height: auto; }
+  .ed-panel { border-radius: 0; border: 0; border-right: 1px solid var(--border); box-shadow: none; }
+  .tl-controls { flex-direction: row; padding: 4px 6px; }
+  .tl-controls .icon-btn.play { width: 32px; height: 32px; }
+  .tl-total { display: none; }
+  .tl-scroll { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
+  .tl-block, .tl-add { height: 32px; }
+  .tl-audio { margin-top: 0; flex: none; }
+  .ed-bottom { height: 32px; }
 }
 /* narrow phones: the top bar fits without squeezing its buttons (Share stays readable to screen readers) */
 @media (max-width: 400px) {

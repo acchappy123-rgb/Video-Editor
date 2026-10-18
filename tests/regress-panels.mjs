@@ -50,7 +50,7 @@ export default async function ({ page, step, OUT }) {
   }, i);
   const savedTemplates = await ev(() => A.app.userTemplates);
   const savedBrand = await ev(() => A.app.brand);
-  await ev(() => { A.AI._t = { ready: A.AI.ready, rewrite: A.AI.rewrite }; });
+  await ev(() => { A.AI._t = { ready: A.AI.ready, rewrite: A.AI.rewrite, translate: A.AI.translate, assistant: A.AI.assistant }; });
   const GIF = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
 
   await step('panels: a user template with a connector keeps it joined; replacing a page drops its comments (state-15, render-20, ui-12, state-21)', async () => {
@@ -366,6 +366,45 @@ export default async function ({ page, step, OUT }) {
     await page.waitForFunction((id) => A.E.byId(id).text.startsWith('more:'), sub, { timeout: 5000 });
     const t = await texts();
     ok(t[0] === 'Project Atlas' && t[1] === 'more: shorter: A clear plan', 'rewrite went to the wrong text', t);
+  });
+
+  await step('panels: an AI rewrite of the text being edited ends the edit and keeps the rewrite (ui-27)', async () => {
+    await open('presentation');
+    await ev(() => { A.AI.ready = () => true; A.AI.rewrite = async () => { await new Promise((r) => setTimeout(r, 300)); return 'REWRITTEN'; }; });
+    const id = await ev(() => { const t = A.M.newText({ text: 'Original words', x: 200, y: 200, w: 900, size: 80 }); t.h = A.R.textHeight(t); A.E.page().elements.push(t); A.E.changed(); return t.id; });
+    await rail('ai');
+    const c = await center(id);
+    await page.mouse.dblclick(c.x, c.y);
+    await page.waitForSelector('textarea.text-edit');
+    await page.click('.panel-body .chip:has-text("Shorter")');
+    await page.waitForFunction((id) => A.E.byId(id).text === 'REWRITTEN', id, { timeout: 5000 });
+    await page.keyboard.type('!');
+    await page.keyboard.press('Escape');
+    const t = await ev((id) => A.E.byId(id).text, id);
+    ok(t.startsWith('REWRITTEN'), 'the open text box wrote the old text back', t);
+  });
+
+  await step('panels: Font sets, Translate and the assistant keep curved text sized from its arc (text-9)', async () => {
+    await open('presentation');
+    const id = await ev(() => { const t = A.M.newText({ text: 'Curved words', x: 300, y: 200, w: 400, size: 60, curve: 60 }); A.R.fitText(t); A.E.page().elements.push(t); A.E.changed(); return t.id; });
+    const fit = async (what) => {
+      const r = await ev((id) => { const el = A.E.byId(id), g = A.R.curveGeom(el); return { w: el.w, h: el.h, gw: g.w, gh: g.h, font: el.font, size: el.size, text: el.text }; }, id);
+      ok(Math.abs(r.w - r.gw) < 0.5 && Math.abs(r.h - r.gh) < 0.5, 'curved box not refitted after ' + what, r);
+      return r;
+    };
+    const f0 = await fit('opening');
+    await rail('design');
+    await page.click('.ed-panel .p-tab:text-is("Styles")');
+    await page.click('.ed-panel .font-set >> nth=2');
+    ok((await fit('a font set')).font !== f0.font, 'font set not applied');
+    await ev(async () => { A.AI.translate = async (strs) => strs.map(() => 'Mots courbés'); await A.EU.translateDesign(A.E.d, 'French'); A.E.changed(); });
+    ok((await fit('Translate')).text === 'Mots courbés', 'not translated');
+    await ev((id) => { A.AI.ready = () => true; A.AI.assistant = async () => ({ reply: 'Bigger', ops: [{ op: 'update', id, props: { size: 90 } }] }); }, id);
+    await rail('ai');
+    await page.fill('.ed-panel input[placeholder^="Ask the assistant"]', 'Make it bigger');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction((id) => A.E.byId(id).size === 90, id, { timeout: 5000 });
+    await fit('an assistant update');
   });
 
   await ev(([tpls, brand]) => {

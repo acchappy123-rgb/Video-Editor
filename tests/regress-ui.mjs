@@ -107,6 +107,18 @@ export default async function ({ page, step }) {
     const d = await ev((i) => A.S.get('designs', i), id);
     ok(d && d.deletedAt > 0, 'not in the trash', { deletedAt: d?.deletedAt });
     await ev(async (i) => A.S.restoreDesign(i), id);
+    // restored from the trash, its newest version does not send it back there
+    ok(!(await ev(async (i) => (await A.S.listVersions(i)).some((v) => JSON.parse(v.data).deletedAt), id)), 'a version holds deletedAt');
+    await ev(async (i) => { const d = await A.S.get('designs', i); await A.S.addVersion({ ...d, deletedAt: Date.now() - 1000 }, 'Trashed copy'); }, id);
+    await ev((i) => A.app.go('#/design/' + i), id);
+    await page.waitForFunction(() => A.E.d && document.querySelector('.page-svg'));
+    await page.click('.ed-top-left .top-btn:has-text("File")');
+    await page.click('.menu-item:has-text("Version history")');
+    await page.locator('.modal .version', { hasText: 'Trashed copy' }).locator('button').click();
+    await page.waitForSelector('.modal', { state: 'detached' });
+    await flushSave();
+    const r = await ev(async () => ({ live: A.E.d.deletedAt, db: (await A.S.get('designs', A.E.d.id)).deletedAt }));
+    ok(!r.live && !r.db, 'the restored version trashed the open design', r);
   });
 
   await step('ui: shape text being typed shows the text tools (text-18)', async () => {
@@ -220,6 +232,15 @@ export default async function ({ page, step }) {
     await clickEl(rect, true);
     const s = await ev((r) => ({ panel: A.EU.panel, sel: A.E.selEls().map((e) => e.type), h: A.E.byId(r).h }), rect);
     ok(s.panel !== 'crop' && s.sel.length === 2 && s.h === 150, 'mixed selection', s);
+    // an undo that brings the mixed selection back closes Crop too
+    await page.keyboard.press('ArrowRight');
+    await wait(600);
+    await page.keyboard.press('Escape');
+    await clickEl(img);
+    await page.click('.ed-toolbar button[title="Crop"]');
+    await page.keyboard.press('Control+z');
+    const u = await ev(() => ({ panel: A.EU.panel, sel: A.E.sel.length }));
+    ok(u.sel === 2 && u.panel !== 'crop', 'Crop after an undo', u);
   });
 
   await step('ui: the Draw tool stays off after its panel is closed and an undo runs (ui-11)', async () => {
@@ -251,6 +272,26 @@ export default async function ({ page, step }) {
     ok(tb.some((t) => t.includes('Page locked')) && tb.includes('Unlock page') && !tb.includes('Fill colour'), 'toolbar on a locked page', tb);
     await ev(() => A.EU.apply((x) => (x.fill = '#000000')));
     ok((await ev((i) => A.E.byId(i).fill, id)) === '#38b6ff', 'EU.apply edited a locked page');
+    // panels respect the lock too: Position fields, background uploads and swatches, 'Replace current page'
+    await ev(() => { A.P.state.posTab = 'arrange'; A.EU.openPanel('position'); });
+    const xf = page.locator('.adv-grid label:has(span:text-is("X")) input');
+    await xf.fill('0');
+    await xf.press('Enter');
+    ok((await ev((i) => A.E.byId(i).x, id)) === 200 && (await xf.inputValue()) === '200', 'Position X on a locked page', await xf.inputValue());
+    await addAsset();
+    const pg0 = await ev(() => JSON.stringify(A.E.page()));
+    await ev(() => A.E.deselect());
+    await page.click('.ed-toolbar button[title="Background image"]');
+    await page.click('.panel-body .img-item >> nth=0');
+    await page.click('.rail-btn[data-p="design"]');
+    await page.click('.ed-panel .p-tab:text-is("Styles")');
+    await page.click('.ed-panel .bg-sw >> nth=3');
+    await page.click('.ed-panel .p-tab:text-is("Templates")');
+    await page.click('.ed-panel .tpl-card >> nth=0');
+    await page.click('.menu-item:has-text("Replace current page")');
+    await wait(300);
+    ok((await ev(() => JSON.stringify(A.E.page()))) === pg0, 'a panel changed the locked page', await ev(() => ({ bg: A.E.page().bg, n: A.E.els().length, locked: A.E.page().locked })));
+    await clickEl(id);
     await page.click('.ed-toolbar button[title="Unlock page"]');
     ok(!(await ev(() => A.E.page().locked)), 'still locked');
     tb = await toolbar();
@@ -359,5 +400,41 @@ export default async function ({ page, step }) {
     }
     ok(await ev(() => A.E.save()), 'save after recovery');
     ok((await warnings()) === 0, 'warning left after a successful save');
+  });
+
+  await step('ui: a save warning left from an earlier session downloads that session\'s edits and says so (rank 4)', async () => {
+    const id = await open('social');
+    await ev(() => {
+      window.__save = A.S.saveDesign;
+      window.__err = console.error;
+      console.error = () => {};
+      A.S.saveDesign = () => Promise.reject(new DOMException('full', 'QuotaExceededError'));
+      document.querySelectorAll('.toast').forEach((t) => t.remove());
+    });
+    try {
+      await blur();
+      await page.keyboard.press('r');
+      await ev(() => A.E.save());
+      await page.click('.ed-top-left button[title="Home"]');
+      await page.waitForSelector('.hero');
+    } finally {
+      await ev(() => { A.S.saveDesign = window.__save; console.error = window.__err; });
+    }
+    await ev((i) => A.app.go('#/design/' + i), id);
+    await page.waitForFunction(() => A.E.d && document.querySelector('.page-svg'));
+    await wait(300);
+    ok(await ev(() => A.E.save()), 'save in the reopened editor');
+    const warn = page.locator('.toast.error', { hasText: 'Download design file' });
+    const text = await warn.textContent();
+    ok(text.startsWith('Earlier changes'), 'warning text after reopening', text);
+    await ev(() => { window.__dl = null; window.__download = A.U.download; A.U.download = (blob) => (window.__dl = blob); });
+    try {
+      await warn.locator('button', { hasText: 'Download design file' }).click();
+      await page.waitForFunction(() => window.__dl);
+      const n = await ev(async () => JSON.parse(await window.__dl.text()).design.pages[0].elements.length);
+      ok(n === 1, 'the download left out the unsaved rectangle', n);
+    } finally {
+      await ev(() => { A.U.download = window.__download; });
+    }
   });
 }

@@ -193,7 +193,7 @@ window.A = window.A || {};
         close();
       }
       if (e.key !== 'Tab') return;
-      const f = U.$$('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])', box).filter((x) => !x.disabled && x.getClientRects().length);
+      const f = U.$$('button, [href], input, select, textarea, summary, iframe, audio[controls], video[controls], [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"])', box).filter((x) => !x.disabled && x.getClientRects().length);
       const i = f.indexOf(document.activeElement);
       if (f.length && !(e.shiftKey ? i <= 0 : i < 0 || i === f.length - 1)) return;
       e.preventDefault();
