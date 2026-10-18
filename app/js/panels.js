@@ -13,6 +13,8 @@
   };
   const svgThumb = (inner, vb = '0 0 100 100') => h('span.el-thumb', { html: `<svg viewBox="${vb}" width="100%" height="100%">${inner}</svg>` });
   const sel1 = () => E.selEls()[0];
+  // An item that adds on click, or where it is dropped on a page (dragged with the mouse, or held and dragged by touch).
+  const item = (sel, attrs, add, ...kids) => EU.draggable(h(sel, { ...attrs, onclick: () => add() }, ...kids), { add });
   // page edits made from a panel respect the page lock
   const setBg = (patch) => {
     if (!E.canEdit()) return false;
@@ -48,7 +50,7 @@
       body.append(section('Colour palettes', h('div.palette-list', M.STYLE_PALETTES.map(([name, cols]) => h('button.palette', { title: 'Apply ' + name + ' colours to this page', onclick: () => recolor(cols) }, h('div.pal-cols', cols.map((c) => h('span', { style: { background: c } }))), h('span', name))))));
       if (A.app.brand?.colors?.length) body.append(section('Brand colours', h('button.palette', { onclick: () => recolor(A.app.brand.colors) }, h('div.pal-cols', A.app.brand.colors.slice(0, 6).map((c) => h('span', { style: { background: c } }))), h('span', 'Apply brand palette'))));
       body.append(section('Font sets', h('div.font-sets', M.FONT_PAIRS.map(([hf, bf, name]) => h('button.font-set', { onclick: () => applyFonts(hf, bf) }, h('b', { style: { fontFamily: M.fontStack(hf) } }, name), h('span', { style: { fontFamily: M.fontStack(bf) } }, hf + ' & ' + bf))))));
-      body.append(section('Background', h('div.bg-grid', ['#ffffff', '#f5efe6', '#111111', '#0a3d62', '#ffde59', '#ff66c4', 'grad:#8c52ff:#ff66c4:135', 'grad:#00c6ff:#0072ff:135', 'grad:#11998e:#38ef7d:135', 'grad:#f7971e:#ffd200:135', 'grad:#232526:#414345:135', 'grad:#fbc2eb:#a6c1ee:135'].map((c) => h('button.bg-sw', { style: { background: R.cssPaint(c) }, onclick: () => setBg({ color: c }) })))));
+      body.append(section('Background', h('div.bg-grid', ['#ffffff', '#f5efe6', '#111111', '#0a3d62', '#ffde59', '#ff66c4', 'grad:#8c52ff:#ff66c4:135', 'grad:#00c6ff:#0072ff:135', 'grad:#11998e:#38ef7d:135', 'grad:#f7971e:#ffd200:135', 'grad:#232526:#414345:135', 'grad:#fbc2eb:#a6c1ee:135'].map((c) => item('button.bg-sw', { style: { background: R.cssPaint(c) }, title: 'Background' }, () => setBg({ color: c }))))));
     }
     return { title: 'Design', body };
   };
@@ -122,26 +124,22 @@
         ['Line', 'line', () => E.addLine()], ['Arrow', 'arrow line', () => E.addLine({ end: 'triangle' })], ['Double arrow', 'arrow', () => E.addLine({ start: 'triangle', end: 'triangle' })],
         ['Dashed', 'dashed line', () => E.addLine({ dash: 'dashed' })], ['Dotted', 'dotted line', () => E.addLine({ dash: 'dotted', strokeWidth: Math.max(4, W / 200) })], ['Connector', 'elbow connector arrow', () => E.addLine({ elbow: true, end: 'arrow' })],
       ].filter(([n, t]) => match(n + ' ' + t));
-      if (lineItems.length) content.append(section('Lines & arrows', h('div.el-grid', lineItems.map(([n, , fn]) => h('button.el-item', { title: n, onclick: fn }, svgThumb(lineThumb(n)))))));
+      if (lineItems.length) content.append(section('Lines & arrows', h('div.el-grid', lineItems.map(([n, , fn]) => item('button.el-item', { title: n }, fn, svgThumb(lineThumb(n)))))));
       const shapes = M.SHAPES.filter(([k, n]) => match(n + ' shape ' + k));
-      if (shapes.length) content.append(section('Shapes', h('div.el-grid', shapes.map(([k, n]) => {
-        const b = h('button.el-item', { title: n, draggable: 'true', onclick: () => E.addShape(k) }, svgThumb(`<path d="${R.shapePath(k, 80, 80)}" transform="translate(10 10)" fill="#555"/>`));
-        b.addEventListener('dragstart', (e) => e.dataTransfer.setData('application/x-atelier', JSON.stringify({ kind: 'shape', shape: k })));
-        return b;
-      }))));
-      if (match('sticky note whiteboard post-it')) content.append(section('Sticky notes', h('div.el-grid', ['#ffe066', '#a0e7e5', '#ffaebc', '#b4f8c8', '#cdb4db', '#ffffff'].map((c) => h('button.el-item', { title: 'Sticky note', onclick: () => E.add(M.newSticky({ fill: c, w: Math.max(160, W / 10), h: Math.max(160, W / 10), size: Math.max(18, W / 80) })) }, svgThumb(`<rect x="14" y="14" width="72" height="72" rx="4" fill="${c}" stroke="#ccc"/>`))))));
+      if (shapes.length) content.append(section('Shapes', h('div.el-grid', shapes.map(([k, n]) => item('button.el-item', { title: n }, () => E.addShape(k), svgThumb(`<path d="${R.shapePath(k, 80, 80)}" transform="translate(10 10)" fill="#555"/>`))))));
+      if (match('sticky note whiteboard post-it')) content.append(section('Sticky notes', h('div.el-grid', ['#ffe066', '#a0e7e5', '#ffaebc', '#b4f8c8', '#cdb4db', '#ffffff'].map((c) => item('button.el-item', { title: 'Sticky note' }, () => E.add(M.newSticky({ fill: c, w: Math.max(160, W / 10), h: Math.max(160, W / 10), size: Math.max(18, W / 80) }), { edit: true }), svgThumb(`<rect x="14" y="14" width="72" height="72" rx="4" fill="${c}" stroke="#ccc"/>`))))));
       const icons = Object.keys(M.ICONS).filter((k) => match(k + ' graphic icon illustration'));
       if (icons.length) content.append(section('Graphics',
         h('div.color-filter', h('span.muted', 'Colour'), ...['#1a1a1a', '#8c52ff', '#ff3131', '#00bf63', '#38b6ff', '#ffbd59', '#ff66c4'].map((c) => h('button.color-sw.sm' + (state.iconColor === c ? '.on' : ''), { style: { background: c }, title: c, onclick: () => { state.iconColor = c; render(); } }))),
-        h('div.el-grid', icons.map((k) => h('button.el-item', { title: k, onclick: () => E.add(M.newIcon(k, { fill: state.iconColor, w: W / 6, h: W / 6 })) }, svgThumb(`<path d="${M.ICONS[k]}" fill="${state.iconColor}"/>`, '-2 -2 28 28'))))));
+        h('div.el-grid', icons.map((k) => item('button.el-item', { title: k }, () => E.add(M.newIcon(k, { fill: state.iconColor, w: W / 6, h: W / 6 })), svgThumb(`<path d="${M.ICONS[k]}" fill="${state.iconColor}"/>`, '-2 -2 28 28'))))));
       const stickers = M.STICKERS.filter(() => match('sticker emoji'));
-      if (stickers.length) content.append(section('Stickers', h('div.el-grid.emoji', stickers.map((s) => h('button.el-item', { title: 'Sticker', onclick: () => E.add({ ...M.newText(), type: 'emoji', text: s, w: W / 7, h: W / 7 }) }, h('span.emo', s))))));
-      if (match('frame photo image')) content.append(section('Frames', h('p.muted.small', 'Drop a photo onto a frame, or select a frame and click an upload.'), h('div.el-grid', FRAME_SHAPES.map((k) => h('button.el-item', { title: 'Frame', onclick: () => E.add(M.newShape(k, { w: W / 3, h: W / 3, fill: '#d9d9de', frame: true, text: '' })) }, svgThumb(`<path d="${R.shapePath(k, 80, 80)}" transform="translate(10 10)" fill="#c8c8d0"/><path d="M30 64l14-16 10 10 8-8 10 14z" fill="#9a9aa6"/>`))))));
-      if (match('grid photo collage layout')) content.append(section('Grids', h('div.el-grid', GRIDS.map((g, gi) => h('button.el-item', { title: 'Photo grid', onclick: () => addGrid(g) }, svgThumb(g.map(([x, y, w, hh]) => `<rect x="${10 + x * 80}" y="${10 + y * 80}" width="${w * 80 - 3}" height="${hh * 80 - 3}" fill="#c8c8d0"/>`).join('')))))));
-      if (match('chart graph data bar pie line')) content.append(section('Charts', h('div.el-grid', [['bar', 'Bar'], ['line', 'Line'], ['area', 'Area'], ['pie', 'Pie'], ['donut', 'Donut']].map(([k, n]) => h('button.el-item', { title: n + ' chart', onclick: () => E.add(M.newChart(k, { w: W * 0.5, h: W * 0.35 })) }, svgThumb(chartThumb(k)))))));
-      if (match('table grid data spreadsheet')) content.append(section('Tables', h('div.el-grid', [[3, 3], [4, 3], [5, 4], [6, 2]].map(([r, c]) => h('button.el-item', { title: `${r}×${c} table`, onclick: () => E.add(M.newTable(r, c, { w: W * 0.5, h: r * W * 0.04, size: Math.max(12, W / 70) })) }, h('span.small', `${r} × ${c}`))))));
-      if (match('mockup phone laptop device browser')) content.append(section('Mockups', h('div.el-grid', [['phone', 'Phone'], ['laptop', 'Laptop'], ['browser', 'Browser']].map(([k, n]) => h('button.el-item', { title: n + ' mockup', onclick: () => addMockup(k) }, h('span.small', n))))));
-      if (match('background gradient pattern')) content.append(section('Backgrounds', h('div.bg-grid', ['grad:#8c52ff:#ff66c4:135', 'grad:#00c6ff:#0072ff:135', 'grad:#f7971e:#ffd200:135', 'grad:#11998e:#38ef7d:135', 'grad:#ee0979:#ff6a00:135', 'grad:#fbc2eb:#a6c1ee:135', 'grad:#ffffff:#c3cfe2:0:radial', 'grad:#141e30:#243b55:135'].map((c) => h('button.bg-sw', { style: { background: R.cssPaint(c) }, onclick: () => setBg({ color: c }) })))));
+      if (stickers.length) content.append(section('Stickers', h('div.el-grid.emoji', stickers.map((s) => item('button.el-item', { title: 'Sticker' }, () => E.add({ ...M.newText(), type: 'emoji', text: s, w: W / 7, h: W / 7 }), h('span.emo', s))))));
+      if (match('frame photo image')) content.append(section('Frames', h('p.muted.small', 'Drop a photo onto a frame, or select a frame and click an upload.'), h('div.el-grid', FRAME_SHAPES.map((k) => item('button.el-item', { title: 'Frame' }, () => E.add(M.newShape(k, { w: W / 3, h: W / 3, fill: '#d9d9de', frame: true, text: '' })), svgThumb(`<path d="${R.shapePath(k, 80, 80)}" transform="translate(10 10)" fill="#c8c8d0"/><path d="M30 64l14-16 10 10 8-8 10 14z" fill="#9a9aa6"/>`))))));
+      if (match('grid photo collage layout')) content.append(section('Grids', h('div.el-grid', GRIDS.map((g) => item('button.el-item', { title: 'Photo grid' }, () => addGrid(g), svgThumb(g.map(([x, y, w, hh]) => `<rect x="${10 + x * 80}" y="${10 + y * 80}" width="${w * 80 - 3}" height="${hh * 80 - 3}" fill="#c8c8d0"/>`).join('')))))));
+      if (match('chart graph data bar pie line')) content.append(section('Charts', h('div.el-grid', [['bar', 'Bar'], ['line', 'Line'], ['area', 'Area'], ['pie', 'Pie'], ['donut', 'Donut']].map(([k, n]) => item('button.el-item', { title: n + ' chart' }, () => E.add(M.newChart(k, { w: W * 0.5, h: W * 0.35 })), svgThumb(chartThumb(k)))))));
+      if (match('table grid data spreadsheet')) content.append(section('Tables', h('div.el-grid', [[3, 3], [4, 3], [5, 4], [6, 2]].map(([r, c]) => item('button.el-item', { title: `${r}×${c} table` }, () => E.add(M.newTable(r, c, { w: W * 0.5, h: r * W * 0.04, size: Math.max(12, W / 70) })), h('span.small', `${r} × ${c}`))))));
+      if (match('mockup phone laptop device browser')) content.append(section('Mockups', h('div.el-grid', [['phone', 'Phone'], ['laptop', 'Laptop'], ['browser', 'Browser']].map(([k, n]) => item('button.el-item', { title: n + ' mockup' }, () => addMockup(k), h('span.small', n))))));
+      if (match('background gradient pattern')) content.append(section('Backgrounds', h('div.bg-grid', ['grad:#8c52ff:#ff66c4:135', 'grad:#00c6ff:#0072ff:135', 'grad:#f7971e:#ffd200:135', 'grad:#11998e:#38ef7d:135', 'grad:#ee0979:#ff6a00:135', 'grad:#fbc2eb:#a6c1ee:135', 'grad:#ffffff:#c3cfe2:0:radial', 'grad:#141e30:#243b55:135'].map((c) => item('button.bg-sw', { style: { background: R.cssPaint(c) }, title: 'Background' }, () => setBg({ color: c }))))));
       if (!content.children.length) content.append(h('p.muted', 'No elements match "' + q + '".'));
     };
     const sb = searchBox('Search elements', render);
@@ -197,16 +195,16 @@
   // ---------- Text ----------
   P.text = () => {
     const body = h('div',
-      h('button.btn.primary.full', { onclick: () => E.addText('body') }, U.ic('text', 16), ' Add a text box'),
+      item('button.btn.primary.full', {}, () => E.addText('body'), U.ic('text', 16), ' Add a text box'),
       section('Default text styles',
-        h('button.text-add.heading', { onclick: () => E.addText('heading') }, 'Add a heading'),
-        h('button.text-add.sub', { onclick: () => E.addText('subheading') }, 'Add a subheading'),
-        h('button.text-add.body', { onclick: () => E.addText('body') }, 'Add a little bit of body text')
+        item('button.text-add.heading', {}, () => E.addText('heading'), 'Add a heading'),
+        item('button.text-add.sub', {}, () => E.addText('subheading'), 'Add a subheading'),
+        item('button.text-add.body', {}, () => E.addText('body'), 'Add a little bit of body text')
       )
     );
     const b = A.app.brand?.fonts;
-    if (b && (b.heading || b.body)) body.append(section('Brand fonts', h('div.font-sets', [['heading', 'Heading'], ['subheading', 'Subheading'], ['body', 'Body']].filter(([k]) => b[k]).map(([k, n]) => h('button.font-set', { onclick: () => E.addText(k) }, h('b', { style: { fontFamily: M.fontStack(b[k]) } }, n), h('span', b[k]))))));
-    body.append(section('Font combinations', h('div.combo-grid', M.FONT_PAIRS.map(([hf, bf, name]) => h('button.combo', { onclick: () => addCombo(hf, bf, name) }, h('b', { style: { fontFamily: M.fontStack(hf) } }, name), h('span', { style: { fontFamily: M.fontStack(bf) } }, 'Pair with ' + bf))))));
+    if (b && (b.heading || b.body)) body.append(section('Brand fonts', h('div.font-sets', [['heading', 'Heading'], ['subheading', 'Subheading'], ['body', 'Body']].filter(([k]) => b[k]).map(([k, n]) => item('button.font-set', {}, () => E.addText(k), h('b', { style: { fontFamily: M.fontStack(b[k]) } }, n), h('span', b[k]))))));
+    body.append(section('Font combinations', h('div.combo-grid', M.FONT_PAIRS.map(([hf, bf, name]) => item('button.combo', {}, () => addCombo(hf, bf, name), h('b', { style: { fontFamily: M.fontStack(hf) } }, name), h('span', { style: { fontFamily: M.fontStack(bf) } }, 'Pair with ' + bf))))));
     const styles = [
       ['Neon glow', { color: '#ff66c4', effect: { type: 'neon', intensity: 60 }, bold: true }, '#1a1033'],
       ['Hollow', { color: '#1a1a1a', effect: { type: 'hollow', thickness: 50 }, font: 'Impact' }],
@@ -215,14 +213,14 @@
       ['Glitch', { color: '#1a1a1a', effect: { type: 'glitch' }, font: 'Impact' }],
       ['Curved', { color: '#5e17eb', curve: 45, bold: true }],
     ];
-    body.append(section('Text effects', h('div.combo-grid', styles.map(([name, o, bg]) => h('button.combo', { style: bg ? { background: bg, color: '#fff' } : {}, onclick: () => addStyled(name, o) }, h('b', name))))));
+    body.append(section('Text effects', h('div.combo-grid', styles.map(([name, o, bg]) => item('button.combo', { style: bg ? { background: bg, color: '#fff' } : {} }, () => addStyled(name, o), h('b', name))))));
     return { title: 'Text', body };
   };
   function addCombo(hf, bf, name) {
     const W = E.d.width, s = Math.max(14, W / 1080 * 36);
-    const a = M.newText({ text: name, font: hf, size: s * 2.4, bold: true, w: W * 0.6, align: 'center' });
+    const a = M.sample(M.newText({ text: name, font: hf, size: s * 2.4, bold: true, w: W * 0.6, align: 'center' }));
     a.h = R.textHeight(a);
-    const b = M.newText({ text: 'A few words to set the mood.', font: bf, size: s, w: W * 0.6, y: a.y + a.h + s * 0.5, align: 'center' });
+    const b = M.sample(M.newText({ text: 'A few words to set the mood.', font: bf, size: s, w: W * 0.6, y: a.y + a.h + s * 0.5, align: 'center' }));
     b.h = R.textHeight(b);
     const gid = U.uid('g_');
     a.groupId = b.groupId = gid;
@@ -230,10 +228,10 @@
   }
   function addStyled(name, o) {
     const W = E.d.width;
-    const el = M.newText({ text: name, size: Math.max(20, W / 14), w: W * 0.6, align: 'center', ...o });
+    const el = M.sample(M.newText({ text: name, size: Math.max(20, W / 14), w: W * 0.6, align: 'center', ...o }));
     if (el.curve) { const g = R.curveGeom(el); el.w = g.w; el.h = g.h; }
     else el.h = R.textHeight(el);
-    E.add(el);
+    E.add(el, { edit: true });
   }
 
   // ---------- Brand ----------
@@ -241,10 +239,18 @@
     const b = A.app.brand || {};
     const body = h('div');
     if (!b.colors?.length && !b.logos?.length && !b.fonts?.heading) body.append(h('div.empty', h('p', 'Set up your Brand Kit with logos, colours and fonts so they are always one click away.')));
-    if (b.logos?.length) body.append(section('Logos', h('div.img-grid', b.logos.map((id) => { const img = h('img', { src: S.assetURL(id), alt: 'logo' }); S.ensureAssetURLs([id]).then(() => (img.src = S.assetURL(id))); return h('button.img-item', { onclick: async () => { const a = await S.get('assets', id); if (a) E.addImageAsset(a, { frac: 0.3 }); } }, img); }))));
+    // a brand photo or logo is added on click, or dropped where it is wanted (into a frame there)
+    const brandImg = (id, alt, frac) => {
+      const img = h('img', { src: S.assetURL(id) || null, alt, draggable: 'false' });
+      S.ensureAssetURLs([id]).then(() => (img.src = S.assetURL(id)));
+      const add = async () => { const a = await S.get('assets', id); if (a) E.addImageAsset(a, { frac }); };
+      // (added once loaded, so a mouse click lets go of the focus here: Space can't add it again)
+      return EU.draggable(h('button.img-item', { onclick: (e) => { if (e.detail) e.currentTarget.blur(); add(); } }, img), { add, asset: { id } });
+    };
+    if (b.logos?.length) body.append(section('Logos', h('div.img-grid', b.logos.map((id) => brandImg(id, 'logo', 0.3)))));
     if (b.colors?.length) body.append(section('Brand colours', h('p.muted.small', 'Click to apply to the selection.'), h('div.cp-grid', b.colors.map((c) => h('button.color-sw', { style: { background: c }, title: c, onclick: () => applyColor(c) })))));
-    if (b.fonts?.heading || b.fonts?.body) body.append(section('Brand fonts', ...[['heading', 'Heading'], ['subheading', 'Subheading'], ['body', 'Body']].filter(([k]) => b.fonts[k]).map(([k, n]) => h('button.text-add', { style: { fontFamily: M.fontStack(b.fonts[k]) }, onclick: () => { E.addText(k); } }, n + ' – ' + b.fonts[k]))));
-    if (b.photos?.length) body.append(section('Brand photos', h('div.img-grid', b.photos.map((id) => { const img = h('img', { alt: '' }); S.ensureAssetURLs([id]).then(() => (img.src = S.assetURL(id))); return h('button.img-item', { onclick: async () => { const a = await S.get('assets', id); if (a) E.addImageAsset(a); } }, img); }))));
+    if (b.fonts?.heading || b.fonts?.body) body.append(section('Brand fonts', ...[['heading', 'Heading'], ['subheading', 'Subheading'], ['body', 'Body']].filter(([k]) => b.fonts[k]).map(([k, n]) => item('button.text-add', { style: { fontFamily: M.fontStack(b.fonts[k]) } }, () => E.addText(k), n + ' – ' + b.fonts[k]))));
+    if (b.photos?.length) body.append(section('Brand photos', h('div.img-grid', b.photos.map((id) => brandImg(id, '')))));
     if (b.voice) body.append(section('Brand voice', h('p.small', b.voice)));
     body.append(h('button.btn.full', { onclick: () => A.app.go('#/brand') }, U.ic('brand', 16), ' Edit Brand Kit'));
     return { title: 'Brand', body };
@@ -275,9 +281,8 @@
         await S.ensureAssetURLs(imgs.map((a) => a.id));
         if (!imgs.length) list.append(h('p.muted', 'No images yet.'));
         list.append(h('div.img-grid', imgs.map((a) => {
-          const btn = h('button.img-item', { title: a.name, draggable: 'true', onclick: () => useImage(a, mode) }, h('img', { src: S.assetURL(a.id), alt: a.name, loading: 'lazy', draggable: 'false' }));
-          // dragged onto the page it is added there, onto a frame it fills the frame
-          btn.addEventListener('dragstart', (e) => e.dataTransfer.setData('application/x-atelier', JSON.stringify({ kind: 'image', asset: a.id })));
+          // dragged, it goes where it is dropped (into a frame there), whatever the click does in this mode
+          const btn = EU.draggable(h('button.img-item', { title: a.name, onclick: () => useImage(a, mode) }, h('img', { src: S.assetURL(a.id), alt: a.name, loading: 'lazy', draggable: 'false' })), { add: () => E.addImageAsset(a), asset: a });
           btn.addEventListener('contextmenu', (e) => { e.preventDefault(); U.menu({ x: e.clientX, y: e.clientY }, [{ label: 'Delete upload', icon: 'trash', danger: true, onClick: async () => { a.hidden = true; await S.put('assets', a); EU.renderPanel(); } }]); });
           return btn;
         })));

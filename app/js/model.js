@@ -84,7 +84,12 @@
   M.newShape = (shape = 'rect', o = {}) => base('shape', { shape, fill: '#8c52ff', stroke: '#1a1a1a', strokeWidth: 0, dash: 'solid', radius: 0, ...o });
   M.newLine = (o = {}) => base('line', { p1: { x: 100, y: 200 }, p2: { x: 400, y: 200 }, stroke: '#1a1a1a', strokeWidth: 6, dash: 'solid', start: 'none', end: 'none', elbow: false, ...o });
   M.newImage = (asset, o = {}) => base('image', { asset: asset.id, nw: asset.w, nh: asset.h, crop: { x: 0, y: 0, w: 1, h: 1 }, adj: {}, radius: 0, ...o });
-  M.newSticky = (o = {}) => M.newShape('rect', { w: 240, h: 240, fill: '#ffe066', radius: 6, shadow: true, ...M.textDefaults, text: 'Add an idea', size: 28, align: 'center', votes: 0, sticky: true, ...o });
+  // Sample copy ("Add a heading") is selected when editing starts, so typing replaces it; once the text changes it is ordinary text.
+  M.sample = (el) => ((el.placeholder = el.text), el);
+  M.newSticky = (o = {}) => {
+    const s = M.newShape('rect', { w: 240, h: 240, fill: '#ffe066', radius: 6, shadow: true, ...M.textDefaults, text: 'Add an idea', size: 28, align: 'center', votes: 0, sticky: true, ...o });
+    return o.text === undefined ? M.sample(s) : s;
+  };
   M.newChart = (chart = 'bar', o = {}) =>
     base('chart', { chart, w: 520, h: 360, data: [{ label: 'Q1', value: 12 }, { label: 'Q2', value: 19 }, { label: 'Q3', value: 9 }, { label: 'Q4', value: 24 }], colors: ['#8c52ff', '#00bf63', '#ff914d', '#38b6ff', '#ff66c4', '#ffde59'], font: 'Inter', textColor: '#333333', ...o });
   M.newTable = (rows = 4, cols = 3, o = {}) => {
