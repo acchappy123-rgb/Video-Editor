@@ -283,12 +283,27 @@ body.panel-open .panel-collapse { display: flex; }
 .swatch-btn { flex-direction: column; gap: 0; }
 .text-a { font-weight: 800; font-size: 16px; line-height: 1; font-family: Georgia, serif; }
 .text-bar { width: 20px; height: 4px; border-radius: 2px; border: 1px solid rgba(0, 0, 0, .15); }
+/* the selected elements differ */
+.swatch.mixed { background: conic-gradient(#ff3131 0 25%, #ffde59 0 50%, #00bf63 0 75%, #38b6ff 0); }
+.text-bar.mixed { background: linear-gradient(90deg, #ff3131, #ffde59, #00bf63, #38b6ff); }
+.tb-btn.mixed { outline: 1px dashed var(--muted); outline-offset: -4px; }
 .font-btn { border: 1px solid var(--border); min-width: 140px; justify-content: space-between; padding: 0 10px; }
 .font-btn span:first-child { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stepper { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 8px; height: 36px; flex: none; }
 .stepper button { width: 28px; height: 100%; font-size: 18px; }
 .stepper .num { border: 0; width: 48px; text-align: center; }
 .ed-scroll { flex: 1; min-height: 0; overflow: auto; background: var(--canvas-bg); position: relative; }
+/* find & replace floats over the top right of the canvas */
+.find-bar { position: absolute; top: 60px; right: 16px; z-index: 30; width: 400px; max-width: calc(100% - 32px); display: flex; flex-direction: column; gap: 6px; padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.find-row { display: flex; align-items: center; gap: 4px; }
+.find-row .input { height: 32px; flex: 1; min-width: 0; }
+.find-count { font-size: 12px; color: var(--muted); white-space: nowrap; min-width: 56px; text-align: right; }
+.find-opts { gap: 12px; padding-left: 32px; font-size: 12px; }
+.find-opts .check { margin: 0; }
+.find-rrow { display: none; padding-left: 32px; }
+.find-bar.replace .find-rrow { display: flex; }
+.find-more .ic { transition: transform .15s; }
+.find-bar.replace .find-more .ic { transform: rotate(90deg); }
 .ed-pages { display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 32px 48px 80px; min-width: fit-content; }
 .ed-pages.strip { min-height: 100%; justify-content: center; }
 /* the page sets the block's width: a narrow page wraps its head instead of widening the canvas */
@@ -466,6 +481,16 @@ body.tool-motion .page-frame { cursor: move; }
 .layer.on { border-color: var(--accent-2); background: var(--accent-soft); }
 .layer-thumb { width: 40px; height: 30px; background: repeating-conic-gradient(#e4e4ea 0 25%, #fff 0 50%) 0 0 / 10px 10px; border-radius: 4px; overflow: hidden; flex: none; }
 .layer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+.layer.part { border-color: var(--accent-2); border-style: dashed; }
+.layer.off .layer-thumb, .layer.off .layer-name { opacity: .45; }
+.layer.member { margin-left: 20px; }
+.layer.drop-above { box-shadow: 0 -2px 0 var(--accent-2); }
+.layer.drop-below { box-shadow: 0 2px 0 var(--accent-2); }
+.layer-caret { margin: 0 -6px 0 -2px; }
+.layer-thumb.grp { display: flex; align-items: center; justify-content: center; background: var(--surface-2); color: var(--muted); }
+.layer-count { font-size: 11px; color: var(--muted); background: var(--surface-2); border-radius: 8px; padding: 0 6px; }
+.layer-input { flex: 1; min-width: 0; height: 26px; padding: 0 6px; font-size: 12px; }
 .fx-grid, .filter-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .fx-item, .filter-item { display: flex; flex-direction: column; gap: 4px; align-items: center; font-size: 12px; border-radius: 8px; padding: 4px; border: 2px solid transparent; }
 .fx-item.on, .filter-item.on { border-color: var(--accent-2); }
@@ -595,6 +620,7 @@ body.tool-motion .page-frame { cursor: move; }
   /* 24px across, the margin E.fit leaves on narrow screens */
   .ed-pages { padding: 20px 12px 60px; }
   .ed-toolbar { padding: 4px 8px; }
+  .find-bar { left: 8px; right: 8px; width: auto; max-width: none; top: 56px; }
   .zoom-range { display: none; }
   .tl-block { height: 48px; }
   .tl-add { height: 48px; }
