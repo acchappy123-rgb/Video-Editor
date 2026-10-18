@@ -331,6 +331,17 @@ window.A = window.A || {};
   };
   U.menu = (anchor, items, opts) => {
     const list = U.h('div.menu');
+    // with an item focused, Up/Down/Home/End move through the items; these keys and Enter/Space (which press the
+    // item) don't reach the editor shortcuts
+    list.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') return e.stopPropagation();
+      const its = [...list.querySelectorAll('.menu-item:not(.disabled)')], i = its.indexOf(document.activeElement);
+      const k = { ArrowDown: i + 1, ArrowUp: (i < 0 ? 0 : i) - 1, Home: 0, End: its.length - 1 }[e.key];
+      if (k === undefined || !its.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      its[(k + its.length) % its.length].focus();
+    });
     for (const it of items) {
       if (!it) continue;
       if (it.divider) {
@@ -464,6 +475,7 @@ window.A = window.A || {};
     frame: 'M7 3v18M17 3v18M3 7h18M3 17h18',
     table: 'M4 5h16v14H4zM4 10h16M4 15h16M10 5v14M15 5v14',
     fullscreen: 'M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5',
+    marquee: 'M4 7V4h3M10 4h3M16 4h1M4 10v3M4 16v1M7 17h1M17 7v1M12 12l8 3-3.5 1.5L15 20z',
     star2: 'M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.5 6.7 19.4l1.2-6L3.4 9.3l6-.7z',
     magic: 'M5 19L15 9M14 4v3M19 9h-3M17.5 5.5l-2 2M18 14v2M10 4H8',
     wand: 'M4 20L16 8M15 3v2M19 7h2M17.5 4.5l1.5-1.5M20 11v1M11 4h1',

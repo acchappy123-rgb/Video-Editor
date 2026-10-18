@@ -59,13 +59,17 @@
     E.scrollEl = h('div.ed-scroll', E.pagesEl);
     E.scrollEl.addEventListener('dragover', (e) => e.preventDefault());
     E.scrollEl.addEventListener('drop', E.onDrop);
+    E.scrollEl.addEventListener('pointerdown', E.onCanvasDown, true);
     E.scrollEl.addEventListener('pointerdown', (e) => {
       if (e.target === E.scrollEl || e.target === E.pagesEl) E.deselect();
     });
+    // a middle-button press pans instead of starting the browser's autoscroll
+    E.scrollEl.addEventListener('mousedown', (e) => e.button === 1 && e.preventDefault());
     // Ctrl+wheel and trackpad pinch zoom in proportion to the gesture (pinches send many small deltas),
-    // once per frame and around the cursor
+    // once per frame and around the cursor; a plain wheel scrolls
     let wheel = null;
     E.scrollEl.addEventListener('wheel', (e) => {
+      E.stopGlide();
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       if (!wheel) {
@@ -78,6 +82,15 @@
       wheel.k += e.deltaY * (e.deltaMode === 1 ? 0.05 : e.deltaMode === 2 ? 1 : 0.002);
       wheel.at = { x: e.clientX, y: e.clientY };
     }, { passive: false });
+    // Safari sends trackpad (and two-finger) pinches as gesture events, scaled from where the pinch began;
+    // a pinch the canvas already follows by its pointers is left to that
+    let pinch0 = 0;
+    E.scrollEl.addEventListener('gesturestart', (e) => { e.preventDefault(); pinch0 = E.zoom; });
+    E.scrollEl.addEventListener('gesturechange', (e) => {
+      e.preventDefault();
+      if (E.d && pinch0 && !E.dragging) E.setZoom(pinch0 * e.scale, { x: e.clientX, y: e.clientY });
+    });
+    E.scrollEl.addEventListener('gestureend', (e) => { e.preventDefault(); pinch0 = 0; });
     EU.timeline = h('div.ed-timeline');
     EU.bottom = h('div.ed-bottom');
     const main = h('main.ed-main', EU.toolbar, E.scrollEl, EU.timeline, EU.bottom);
@@ -898,12 +911,29 @@
     b.innerHTML = '';
     const zoomIn = h('input.zoom-range', { type: 'range', min: 5, max: 400, value: Math.round(E.zoom * 100), title: 'Zoom' });
     zoomIn.addEventListener('input', () => E.setZoom(+zoomIn.value / 100));
-    EU.zoomLabel = h('button.zoom-label', { title: 'Zoom to fit', onclick: () => { E.fit(); E.renderAll(); } }, Math.round(E.zoom * 100) + '%');
+    // Enter and Space open the menu rather than editing the selected text or panning
+    EU.zoomLabel = h('button.zoom-label', {
+      title: 'Zoom options', 'aria-haspopup': 'menu',
+      onclick: (e) => zoomMenu(e.currentTarget, !e.detail),
+      onkeydown: (e) => (e.key === 'Enter' || e.key === ' ') && e.stopPropagation(),
+    }, Math.round(E.zoom * 100) + '%');
     EU.zoomRange = zoomIn;
     EU.pageInfo = h('button.page-info', { title: 'Page grid view', onclick: () => gridView() });
+    // touch screens: a finger on a zoomed-in page pans, unless Select is on
+    const selBtn = h('button.icon-btn.sm.touch-only' + (E.selectMode ? '.on' : ''), {
+      title: 'Select mode – drag on the page to select several elements (or press and hold, then drag)',
+      'aria-pressed': String(!!E.selectMode),
+      onclick: () => {
+        E.selectMode = !E.selectMode;
+        selBtn.classList.toggle('on', E.selectMode);
+        selBtn.setAttribute('aria-pressed', String(E.selectMode));
+        U.toast(E.selectMode ? 'Select mode on – drag on the page to select' : 'Select mode off – drag a zoomed-in page to move around');
+      },
+    }, U.ic('marquee', 16));
     b.append(...[
       E.d.type === 'presentation' ? h('button.btn.sm.ghost', { onclick: () => notesEditor() }, U.ic('doc', 14), ' Notes') : null,
       h('div.flex1'),
+      selBtn,
       h('button.icon-btn.sm', { title: 'Zoom out', onclick: () => E.setZoom(E.zoom / 1.2) }, U.ic('zoomout', 16)),
       zoomIn,
       h('button.icon-btn.sm', { title: 'Zoom in', onclick: () => E.setZoom(E.zoom * 1.2) }, U.ic('zoomin', 16)),
@@ -917,6 +947,18 @@
     if (EU.zoomLabel) EU.zoomLabel.textContent = Math.round(E.zoom * 100) + '%';
     if (EU.zoomRange) EU.zoomRange.value = Math.round(E.zoom * 100);
   };
+  // opened from the keyboard, the menu takes the focus (the arrow keys move through it) and gives it back after
+  function zoomMenu(anchor, keyboard) {
+    const pct = Math.round(E.zoom * 100), back = (fn) => () => { if (keyboard) anchor.focus({ preventScroll: true }); fn(); };
+    const m = U.menu(anchor, [
+      ...[25, 50, 100, 200].map((p) => ({ label: p + '%', icon: p === pct ? 'check' : null, shortcut: p === 100 ? 'Shift+0' : null, onClick: back(() => E.setZoom(p / 100)) })),
+      { divider: true },
+      { label: 'Fit page', icon: 'fullscreen', shortcut: 'Shift+1', onClick: back(() => E.fit()) },
+      { label: 'Fill width', icon: 'split', onClick: back(() => E.fillWidth()) },
+      { label: 'Zoom to selection', icon: 'zoomin', shortcut: 'Shift+2', disabled: !E.sel.length, onClick: back(() => E.zoomToSel()) },
+    ], { align: 'right', cls: 'zoom-menu' });
+    if (keyboard) m.querySelector('.menu-item:not(.disabled)')?.focus();
+  }
   EU.refreshPageInfo = () => {
     if (EU.pageInfo && E.d) EU.pageInfo.textContent = `Page ${E.pi + 1} / ${E.d.pages.length}`;
   };
