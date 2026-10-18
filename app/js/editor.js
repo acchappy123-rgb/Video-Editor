@@ -45,6 +45,7 @@
     if (!E.d) return;
     E.finishText();
     E.flushCommit();
+    E.setSpace(false);
     clearInterval(E.versionTimer);
     // an untouched design keeps its 'last edited' time (it is only saved for a missing card preview)
     if (E.dirty || !E.d.thumb) await E.save();
@@ -293,13 +294,15 @@
       want = { left, top, t: performance.now() };
     }));
   };
+  // the zoom that shows the whole page
+  E.fitZoom = () => {
+    const wrap = E.scrollEl, pad = innerWidth < 700 ? 24 : 80;
+    return U.clamp(Math.min((wrap.clientWidth - pad) / E.d.width, (wrap.clientHeight - pad - 40) / E.d.height), 0.05, 2);
+  };
   E.fit = () => {
     const wrap = E.scrollEl;
     if (!wrap) return;
-    const pad = innerWidth < 700 ? 24 : 80;
-    const zw = (wrap.clientWidth - pad) / E.d.width;
-    const zh = (wrap.clientHeight - pad - 40) / E.d.height;
-    const z = U.clamp(Math.min(zw, E.layout() === 'strip' || E.isWB() ? zh : zw * 1, zh * (E.layout() === 'vertical' ? 1.0 : 1)), 0.05, 2);
+    const z = E.fitZoom();
     const b = E.blocks[E.pi];
     if (!b || !E.pagesEl?.contains(b.el)) { E.zoom = z; return A.EU.refreshZoom(); }
     // already showing pages: re-render and centre the current page
@@ -309,11 +312,37 @@
       wrap.scrollTop += r.top + r.height / 2 - sr.top - wrap.clientHeight / 2;
     });
   };
+  // Zoom so `box` (page units, on page i) fills the view with a margin, centred.
+  E.zoomToBox = (box, i = E.pi) => {
+    const wrap = E.scrollEl, b = E.blocks[i];
+    if (!wrap || !b) return;
+    const pad = innerWidth < 700 ? 24 : 64;
+    const z = U.clamp(Math.min((wrap.clientWidth - pad * 2) / Math.max(box.w, 1), (wrap.clientHeight - pad * 2) / Math.max(box.h, 1)), 0.05, 8);
+    zoomTo(z, () => {
+      const r = b.svg.getBoundingClientRect(), sr = wrap.getBoundingClientRect();
+      wrap.scrollLeft += r.left + (box.x + box.w / 2) * z - sr.left - wrap.clientWidth / 2;
+      wrap.scrollTop += r.top + (box.y + box.h / 2) * z - sr.top - wrap.clientHeight / 2;
+    });
+  };
+  E.zoomToSel = () => {
+    const els = E.selEls();
+    if (!els.length) return U.toast('Select something to zoom to it');
+    E.zoomToBox(E.unionBox(els));
+  };
+  // The page's width fills the view (less the canvas padding), keeping the view's centre in place.
+  E.fillWidth = () => {
+    const wrap = E.scrollEl;
+    if (!wrap || !E.blocks[E.pi]) return;
+    const cs = getComputedStyle(E.pagesEl), padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+    // a vertical scrollbar that appears at the new zoom narrows the view, so measure once more
+    for (let k = 0; k < 2; k++) E.setZoom((wrap.clientWidth - padX) / E.d.width);
+    wrap.scrollLeft = (wrap.scrollWidth - wrap.clientWidth) / 2;
+  };
 
   // ---------- pages ----------
   E.setPage = (i, scroll = true) => {
     if (i < 0 || i >= E.d.pages.length) return;
-    const changed = i !== E.pi;
+    const changed = i !== E.pi, from = E.pi;
     if (changed) {
       commitField();
       E.finishText();
@@ -324,13 +353,23 @@
       if (changed) E.buildPages();
     } else {
       for (const k in E.blocks) E.blocks[k].el.classList.toggle('active', +k === i);
-      if (scroll) E.blocks[i]?.el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      if (scroll) showPage(i, from, true);
     }
     E.drawOverlay();
     A.EU.refreshToolbar();
     A.EU.refreshTimeline?.();
     A.EU.refreshPageInfo?.();
   };
+  // Scroll a page that isn't wholly in view to where page `from` is on screen, so switching pages keeps the same
+  // part of the page in view; with `from` out of view it scrolls as little as needed.
+  function showPage(i, from, smooth) {
+    const wrap = E.scrollEl, b = E.blocks[i], a = E.blocks[from];
+    if (!wrap || !b) return;
+    const top = wrap.getBoundingClientRect().top, bottom = top + wrap.clientHeight, br = b.el.getBoundingClientRect(), ar = a?.frame.getBoundingClientRect();
+    const behavior = smooth ? 'smooth' : 'auto';
+    if (i === from || !ar || ar.bottom < top || ar.top > bottom || (br.top >= top && br.bottom <= bottom)) return b.el.scrollIntoView({ block: 'nearest', behavior });
+    wrap.scrollTo({ top: wrap.scrollTop + b.frame.getBoundingClientRect().top - ar.top, behavior });
+  }
   E.addPage = (at = E.d.pages.length, page) => {
     E.finishText();
     const p = page || M.newPage({ bg: { color: E.page()?.bg?.color && !E.page().bg.asset ? E.page().bg.color : '#ffffff' } });
@@ -338,7 +377,8 @@
     E.pi = at;
     E.sel = [];
     E.changed({ structure: true });
-    setTimeout(() => E.blocks[at]?.el.scrollIntoView({ block: 'center', behavior: 'smooth' }), 30);
+    // a strip shows the new page in the place of the last one (pages there share one view)
+    if (E.layout() !== 'strip') setTimeout(() => E.blocks[at]?.el.scrollIntoView({ block: 'center', behavior: 'smooth' }), 30);
   };
   E.duplicatePage = (i) => {
     E.finishText();
@@ -575,7 +615,7 @@
     return t.getAttribute('data-id');
   };
   E.onHover = (e, i) => {
-    if (E.dragging || i !== E.pi || !E.hoverBox) return;
+    if (E.dragging || E.spaceDown || i !== E.pi || !E.hoverBox) return;
     const id = hitId(e, i);
     const el = id && E.byId(id);
     if (!el || E.sel.includes(id)) return (E.hoverBox.style.display = 'none');
@@ -616,8 +656,17 @@
       const sel = E.selEls(), grp = sel.length > 1 && sel.every((x) => x.groupId && x.groupId === sel[0].groupId);
       const box = !e.shiftKey && grp && E.unionBox(sel), p = box && E.toPage(e, i);
       if (p && p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h) return startMove(e, i);
-      if (!e.shiftKey) E.deselect();
-      A.EU.onPageClick?.();
+      const clear = () => { if (!e.shiftKey) E.deselect(); A.EU.onPageClick?.(); };
+      // a finger pans a zoomed-in page and a tap deselects; held still, it draws a selection box instead
+      if (e.pointerType === 'touch' && E.touchPans()) {
+        panFinger = e.pointerId;
+        return E.startPan(e, {
+          onTap: clear,
+          onHold: () => { clear(); holdRing(e, i); startMarquee(e, i); },
+          onPan: () => { if (!panTip) U.toast('Tip: press and hold, or turn on Select, to drag a selection box'); panTip = true; },
+        });
+      }
+      clear();
       return startMarquee(e, i);
     }
     // stay inside an entered group only while the selection is still in it
@@ -635,6 +684,7 @@
     startMove(e, i);
   };
   E.onDblClick = (e, i) => {
+    if (E.spaceDown) return;
     const id = hitId(e, i);
     const el = id && E.byId(id);
     if (!el || el.locked || E.page().locked) return;
@@ -649,12 +699,15 @@
   };
   E.onContext = (e, i, fromButton) => {
     e.preventDefault();
+    // a finger held on an empty zoomed-in page draws a selection box, not the long-press menu
+    if (!fromButton && touches.has(panFinger)) return;
     A.EU.contextMenu(fromButton ? e.currentTarget : { x: e.clientX, y: e.clientY });
   };
 
   // A drag driven by the pointer that started it; other pointers and a design closed mid-drag are ignored.
+  // Returns a handle whose end() drops the drag without onUp (undefined for a second finger).
   let active = null;
-  function session(e0, onMove, onUp) {
+  function session(e0, onMove, onUp, onCancel) {
     if (e0.pointerType === 'touch' && trackTouch(e0) > 1) return;
     const d = E.d, id = e0.pointerId, page = E.page(), objs = [...page.elements], saved = JSON.stringify(objs), sel0 = E.sel;
     const end = () => {
@@ -675,14 +728,17 @@
     addEventListener('pointercancel', up);
     // cancelling (a second finger came down) puts the page back as it was, without an undo step
     active = {
+      end,
       cancel: () => {
         end();
         JSON.parse(saved).forEach((s, k) => { const o = objs[k]; for (const key in o) delete o[key]; Object.assign(o, s); });
         page.elements = objs;
         E.renderPage(E.pi);
         E.select(sel0.filter((x) => E.byId(x)));
+        onCancel?.();
       },
     };
+    return active;
   }
 
   // Touch: a second finger cancels the running drag and pinch-zooms / pans the canvas (.page-frame has touch-action: none).
@@ -740,6 +796,106 @@
     addEventListener('pointerup', end);
     addEventListener('pointercancel', end);
   }
+
+  // ---------- panning ----------
+  // Scrolls by fractions of a pixel without the browser's rounding adding up; a scroll from elsewhere (a zoom) is taken over.
+  const scroller = () => {
+    const wrap = E.scrollEl, pos = { l: wrap.scrollLeft, t: wrap.scrollTop };
+    return (dx, dy) => {
+      if (Math.abs(wrap.scrollLeft - pos.l) > 1) pos.l = wrap.scrollLeft;
+      if (Math.abs(wrap.scrollTop - pos.t) > 1) pos.t = wrap.scrollTop;
+      pos.l = U.clamp(pos.l + dx, 0, wrap.scrollWidth - wrap.clientWidth);
+      pos.t = U.clamp(pos.t + dy, 0, wrap.scrollHeight - wrap.clientHeight);
+      wrap.scrollLeft = pos.l;
+      wrap.scrollTop = pos.t;
+    };
+  };
+  let glide = 0;
+  E.stopGlide = () => cancelAnimationFrame(glide);
+  // Drag the canvas: Space or middle-button drag, or a finger on an empty page. A flicked finger glides on;
+  // a press that doesn't move calls onTap, and one held still calls onHold, which takes the gesture over.
+  E.startPan = (e, { onTap, onHold, onPan } = {}) => {
+    E.stopGlide();
+    const touch = e.pointerType === 'touch', by = scroller();
+    let last = { x: e.clientX, y: e.clientY, t: e.timeStamp }, v = { x: 0, y: 0 }, moved = false, s = null;
+    const done = () => { clearTimeout(hold); document.body.classList.remove('panning'); };
+    const hold = onHold && setTimeout(() => { if (!moved && s && active === s) { s.end(); done(); onHold(); } }, 450);
+    document.body.classList.add('panning');
+    s = session(e, (ev) => {
+      if (!moved && Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) < (touch ? 8 : 3)) return;
+      if (!moved) { moved = true; E.dragging = true; clearTimeout(hold); onPan?.(); }
+      const dt = Math.max(1, ev.timeStamp - last.t), dx = last.x - ev.clientX, dy = last.y - ev.clientY;
+      v = { x: v.x * 0.3 + (dx / dt) * 0.7, y: v.y * 0.3 + (dy / dt) * 0.7 };
+      by(dx, dy);
+      last = { x: ev.clientX, y: ev.clientY, t: ev.timeStamp };
+    }, (ev) => {
+      done();
+      // a middle-button release would paste the X11 selection onto the canvas (Linux)
+      if (e.button === 1) ev.preventDefault();
+      const lifted = ev.type === 'pointerup';
+      if (!moved) return lifted && onTap?.(ev);
+      E.drawOverlay();
+      // a finger lifted mid-flick keeps the canvas moving, slowing down
+      if (!touch || !lifted || ev.timeStamp - last.t > 80 || Math.hypot(v.x, v.y) < 0.3) return;
+      const d = E.d, glideBy = scroller();
+      let t0 = performance.now();
+      const step = (t) => {
+        const dt = Math.min(40, t - t0), k = Math.pow(0.996, dt);
+        t0 = t;
+        v = { x: v.x * k, y: v.y * k };
+        if (E.d !== d || !E.scrollEl?.isConnected || Math.hypot(v.x, v.y) < 0.03) return;
+        glideBy(v.x * dt, v.y * dt);
+        glide = requestAnimationFrame(step);
+      };
+      glide = requestAnimationFrame(step);
+    }, done);
+    if (!s) done();
+  };
+  // A finger pans a page zoomed in past fit instead of drawing a selection box (unless Select mode is on).
+  E.touchPans = () => !E.selectMode && E.zoom > E.fitZoom() * 1.01;
+  let panTip = false, panFinger = null;
+  // Capture-phase pointerdown anywhere on the canvas: Space or the middle button pans (over elements and handles too),
+  // and a double tap on empty canvas zooms to fit.
+  let lastTap = null;
+  E.onCanvasDown = (e) => {
+    E.stopGlide();
+    if (!E.d) return;
+    if (e.button === 1 || (e.button === 0 && E.spaceDown && e.pointerType !== 'touch')) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return E.startPan(e);
+    }
+    if (e.pointerType !== 'touch' || !e.isPrimary || E.tool) return (lastTap = null);
+    const empty = !e.target.closest('[data-id], .handle, .rot-handle, .move-handle, .mini-menu, .comment-pin, .ruler, .user-guide, .page-head, button, input, textarea');
+    const id = e.pointerId, x = e.clientX, y = e.clientY, t = e.timeStamp;
+    let multi = false;
+    const other = (ev) => ev.pointerId !== id && (multi = true);
+    const up = (ev) => {
+      if (ev.pointerId !== id) return;
+      removeEventListener('pointerdown', other, true);
+      removeEventListener('pointerup', up, true);
+      removeEventListener('pointercancel', up, true);
+      const tap = empty && !multi && ev.type === 'pointerup' && ev.timeStamp - t < 300 && Math.hypot(ev.clientX - x, ev.clientY - y) < 10;
+      if (tap && lastTap && t - lastTap.t < 350 && Math.hypot(x - lastTap.x, y - lastTap.y) < 30) {
+        lastTap = null;
+        if (E.d) E.fit();
+      } else lastTap = tap ? { x, y, t: ev.timeStamp } : null;
+    };
+    addEventListener('pointerdown', other, true);
+    addEventListener('pointerup', up, true);
+    addEventListener('pointercancel', up, true);
+  };
+  // Hold Space to pan with the mouse (a hand cursor shows while it is held).
+  E.setSpace = (on) => {
+    E.spaceDown = on;
+    document.body.classList.toggle('tool-pan', on);
+    if (on && E.hoverBox) E.hoverBox.style.display = 'none';
+  };
+  E.onKeyUp = (e) => {
+    if (!E.spaceDown || (e && e.code !== 'Space' && e.key !== ' ')) return;
+    e?.preventDefault();
+    E.setSpace(false);
+  };
 
   // Move with smart guides. Alt/Option-drag copies.
   function startMove(e, i) {
@@ -916,6 +1072,13 @@
     }
   }
 
+  // shows where a held finger starts its selection box
+  function holdRing(e, i) {
+    const p = E.toPage(e, i), z = E.zoom;
+    const ring = U.h('div.hold-ring', { style: { left: p.x * z + 'px', top: p.y * z + 'px' } });
+    E.blocks[i].overlay.appendChild(ring);
+    setTimeout(() => ring.remove(), 700);
+  }
   function startMarquee(e, i) {
     const p0 = E.toPage(e, i);
     const b = E.blocks[i];
@@ -1746,6 +1909,13 @@
       else if (k !== 'tab' && !((k === 'enter' || k === ' ') && ae?.closest('button'))) E.textArea?.focus({ preventScroll: true });
       return;
     }
+    // hold Space to pan; a focused control away from the canvas still takes its Space
+    if ((e.code === 'Space' || k === ' ') && !mod && !e.altKey) {
+      if (ae?.matches('button, input, summary, a[href], [tabindex]') && !E.scrollEl?.matches(':hover') && !E.spaceDown) return;
+      stop();
+      if (!E.spaceDown) E.setSpace(true);
+      return;
+    }
     if (mod) {
       if (k === 'z') { stop(); e.shiftKey ? E.redo() : E.undo(); }
       else if (k === 'y') { stop(); E.redo(); }
@@ -1773,6 +1943,12 @@
       else if (k === 'enter' && E.layout() === 'strip') { stop(); A.Present.start(); }
       return;
     }
+    // Shift+0 / 1 / 2: 100%, fit the page, zoom to the selection (by key position, whatever the layout types)
+    const zk = e.shiftKey && !e.altKey && /^(Digit|Numpad)[012]$/.test(e.code) && +e.code.slice(-1);
+    if (zk !== false) {
+      stop();
+      return zk === 0 ? E.setZoom(1) : zk === 1 ? E.fit() : E.zoomToSel();
+    }
     if (k === 'escape') {
       if (E.tool) { E.tool = null; A.EU.refreshTool(); }
       else if (E.enteredGroup) { E.enteredGroup = null; E.deselect(); }
@@ -1782,8 +1958,11 @@
     if (k === 'delete' || k === 'backspace') { stop(); return E.deleteSel(); }
     if (k.startsWith('arrow')) {
       if (!E.sel.length) {
+        const s = e.shiftKey ? 400 : 60;
         if (E.layout() === 'strip' && (k === 'arrowleft' || k === 'arrowup')) E.setPage(E.pi - 1);
         else if (E.layout() === 'strip') E.setPage(E.pi + 1);
+        // pages under each other: the arrows scroll the canvas
+        else E.scrollEl?.scrollBy(k === 'arrowleft' ? -s : k === 'arrowright' ? s : 0, k === 'arrowup' ? -s : k === 'arrowdown' ? s : 0);
         return stop();
       }
       stop();

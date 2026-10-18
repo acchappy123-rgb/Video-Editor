@@ -288,7 +288,8 @@ body.panel-open .panel-collapse { display: flex; }
 .stepper { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 8px; height: 36px; flex: none; }
 .stepper button { width: 28px; height: 100%; font-size: 18px; }
 .stepper .num { border: 0; width: 48px; text-align: center; }
-.ed-scroll { flex: 1; min-height: 0; overflow: auto; background: var(--canvas-bg); position: relative; }
+/* no double-tap zoom around the pages: a double tap there fits the page */
+.ed-scroll { flex: 1; min-height: 0; overflow: auto; background: var(--canvas-bg); position: relative; touch-action: manipulation; }
 .ed-pages { display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 32px 48px 80px; min-width: fit-content; }
 .ed-pages.strip { min-height: 100%; justify-content: center; }
 /* the page sets the block's width: a narrow page wraps its head instead of widening the canvas */
@@ -309,6 +310,11 @@ body.panel-open .panel-collapse { display: flex; }
 .page-overlay { position: absolute; inset: 0; pointer-events: none; }
 .add-page-btn { width: min(520px, 90%); height: 44px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px; }
 .add-page-btn:hover { border-color: var(--accent-2); color: var(--accent-2); }
+/* Space held: the canvas, its handles and elements show a hand; a pan in progress grabs */
+body.tool-pan .ed-scroll, body.tool-pan .ed-scroll * { cursor: grab !important; }
+body.panning, body.panning .ed-scroll, body.panning .ed-scroll * { cursor: grabbing !important; }
+.hold-ring { position: absolute; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; border: 2px solid var(--sel); animation: hold-ring .6s ease-out forwards; }
+@keyframes hold-ring { from { transform: scale(.3); opacity: 1; } to { transform: scale(1); opacity: 0; } }
 body.tool-draw .page-frame { cursor: crosshair; }
 body.tool-comment .page-frame { cursor: copy; }
 body.tool-motion .page-frame { cursor: move; }
@@ -399,6 +405,10 @@ body.tool-motion .page-frame { cursor: move; }
 .zoom-range { width: 120px; }
 .zoom-label, .page-info { font-size: 12px; font-weight: 600; padding: 4px 8px; border-radius: 6px; white-space: nowrap; }
 .zoom-label:hover, .page-info:hover { background: var(--surface-2); }
+.ed-bottom .touch-only { display: none; }
+@media (any-pointer: coarse) { .ed-bottom .touch-only { display: inline-flex; } }
+@media (hover: none) { .zoom-menu kbd { display: none; } }
+.ed-bottom .icon-btn.on { background: var(--surface-2); }
 .timer-chip { position: fixed; top: 66px; right: 16px; background: #1f2027; color: #fff; padding: 8px 14px; border-radius: 999px; font-weight: 700; z-index: 50; font-variant-numeric: tabular-nums; }
 .page-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
 .pg-card { cursor: pointer; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
@@ -633,4 +643,8 @@ body.tool-motion .page-frame { cursor: move; }
   .ed-top .icon-btn { width: 32px; }
   .ed-top .top-btn { padding: 0 6px; }
   .ed-top .btn.share { font-size: 0; gap: 0; width: 40px; padding: 0; }
+  .ed-bottom { gap: 2px; padding: 0 4px; }
+  .ed-bottom > :not(.flex1) { flex: none; }
+  .ed-bottom .btn.sm { padding: 0 6px; }
+  .zoom-label, .page-info { padding: 4px; }
 }

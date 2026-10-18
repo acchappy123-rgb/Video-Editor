@@ -430,7 +430,8 @@
       ['Ctrl/⌘ + D', 'Duplicate'], ['Ctrl/⌘ + G', 'Group'], ['Shift + Ctrl/⌘ + G', 'Ungroup'], ['Ctrl/⌘ + C / X / V', 'Copy / cut / paste'], ['Ctrl/⌘ + A', 'Select all'],
       ['Ctrl/⌘ + Z / Y', 'Undo / redo'], ['Ctrl/⌘ + B / I / U', 'Bold / italic / underline'], ['Alt/Option + drag', 'Copy while dragging'], ['Shift + drag corner', 'Keep / free proportions'], ['Alt/Option + drag handle', 'Resize from the centre'], ['Shift + rotate', 'Snap rotation to 15°'],
       ['Arrow keys', 'Nudge 1px'], ['Shift + arrows', 'Nudge 10px'], ['Ctrl/⌘ + drag', 'Move or resize without snapping'], ['Enter', 'Edit selected text'], ['Delete', 'Delete selection'], ['Esc', 'Deselect / exit tool'],
-      ['Ctrl/⌘ + + / − / 0', 'Zoom in / out / fit'], ['Ctrl/⌘ + Enter', 'Present (presentations)'], ['In present mode: ← → Space', 'Change page'], ['P / F', 'Presenter view / full screen'],
+      ['Ctrl/⌘ + + / − / 0', 'Zoom in / out / fit'], ['Shift + 0 / 1 / 2', 'Zoom to 100% / fit page / selection'], ['Ctrl/⌘ + wheel, pinch', 'Zoom at the pointer'],
+      ['Space + drag, middle-drag', 'Pan the canvas'], ['Arrow keys, nothing selected', 'Scroll the canvas (change page in presentations)'], ['Ctrl/⌘ + Enter', 'Present (presentations)'], ['In present mode: ← → Space', 'Change page'], ['P / F', 'Presenter view / full screen'],
     ];
     U.modal({ title: 'Keyboard shortcuts', wide: true, body: h('div.shortcuts', rows.map(([k, d]) => h('div.sc-row', h('kbd', k), h('span', d)))) });
   };

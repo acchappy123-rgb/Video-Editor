@@ -205,6 +205,9 @@
     matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', app.applyTheme);
     await S.purgeTrash();
     document.addEventListener('keydown', (e) => A.E.onKey(e));
+    // a Space released while the window is away never sends its keyup
+    document.addEventListener('keyup', (e) => A.E.onKeyUp(e));
+    addEventListener('blur', () => A.E.onKeyUp());
     document.addEventListener('copy', (e) => A.E.onCopyEvent(e));
     document.addEventListener('cut', (e) => A.E.onCopyEvent(e));
     document.addEventListener('paste', (e) => A.E.onPaste(e));
