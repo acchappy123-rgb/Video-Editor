@@ -145,6 +145,10 @@
 
   // ---------- panels ----------
   EU.togglePanel = (id) => (EU.panel === id && EU.panelOpen ? EU.closePanel() : EU.openPanel(id));
+  EU.openLayers = () => {
+    A.P.state.posTab = 'layers';
+    EU.openPanel('position');
+  };
   EU.openPanel = (id, arg) => {
     if (EU.panel === 'draw' && id !== 'draw') { E.tool = null; EU.refreshTool(); }
     // another panel ends a crop (the Crop panel edits the same photo)
@@ -167,16 +171,25 @@
     if (!EU.panelEl) return;
     U.$$('.rail-btn').forEach((b) => b.classList.toggle('on', b.dataset.p === EU.panel));
     const fn = A.P[EU.panel];
+    // redrawing the same panel keeps its scroll position, and the focus on a row that has a data-key (Layers)
+    const same = EU.panelEl.dataset.p === EU.panel, top = same ? U.$('.panel-body', EU.panelEl)?.scrollTop : 0;
+    const key = same && EU.panelEl.contains(document.activeElement) && document.activeElement.dataset.key;
+    EU.panelEl.dataset.p = EU.panel;
     EU.panelEl.innerHTML = '';
     if (!fn) return;
     const { title, body, back } = fn(EU.panelArg) || {};
     EU.panelEl.appendChild(h('div.panel-head', back ? h('button.icon-btn.sm', { title: 'Back', onclick: back }, U.ic('back', 16)) : null, h('h3', title || ''), h('button.icon-btn.sm.panel-x', { title: 'Close panel', onclick: () => EU.closePanel() }, U.ic('x', 16))));
-    EU.panelEl.appendChild(h('div.panel-body', body));
+    const pb = h('div.panel-body', body);
+    EU.panelEl.appendChild(pb);
+    if (top) pb.scrollTop = top;
+    const f = key && [...pb.querySelectorAll('[data-key]')].find((x) => x.dataset.key === key);
+    if (f) { f.focus({ preventScroll: true }); f.scrollIntoView({ block: 'nearest' }); }
   };
   EU.refreshPanel = () => {
     if (EU.panelOpen && ['position', 'animate', 'effects', 'imageEdit', 'chart', 'table', 'comments', 'crop'].includes(EU.panel)) showPanel();
   };
   EU.onSelectionChange = () => {
+    if (EU.panelOpen && EU.panel === 'position' && A.P.syncLayers?.()) return;
     if (EU.panelOpen && ['position', 'animate', 'effects', 'imageEdit', 'chart', 'table', 'crop'].includes(EU.panel)) showPanel();
   };
   // A typed panel whose selection no longer fits (another click, an undo) gives way to Elements.
@@ -192,6 +205,14 @@
 
   // ---------- helpers used by toolbar & panels ----------
   const textLike = (el) => el.type === 'text' || (el.type === 'shape' && el.text);
+  // A control for several elements shows their one shared value, or MIXED.
+  const MIXED = (EU.MIXED = 'mixed');
+  EU.common = (els, get) => {
+    const v = get(els[0]);
+    return els.every((x) => get(x) === v) ? v : MIXED;
+  };
+  // The name a layer goes by in the Layers panel, find results and comments.
+  EU.layerName = (el) => el.name || (el.text && el.type !== 'emoji' ? '“' + el.text.slice(0, 24) + '”' : el.type === 'shape' ? (el.frame ? 'Frame' : 'Shape') : el.type === 'emoji' ? 'Sticker ' + el.text : el.type[0].toUpperCase() + el.type.slice(1));
   EU.apply = (fn, commit = true) => {
     const els = E.editEls();
     if (!els.length) return;
@@ -205,22 +226,24 @@
     E.changed({ commit, toolbar: commit });
     if (E.editingId) E.restyleText();
   };
-  EU.slider = (label, value, min, max, step, onInput, fmt = (v) => v) => {
+  // `mixed`: the elements differ, so the number field says so until a value is picked
+  EU.slider = (label, value, min, max, step, onInput, fmt = (v) => v, { mixed = false } = {}) => {
     const out = h('span.slider-val', String(fmt(value)));
     const inp = h('input', { type: 'range', min, max, step, value });
-    const num = h('input.num', { type: 'number', min, max, step, value });
+    const num = h('input.num', { type: 'number', min, max, step, value: mixed ? '' : value, placeholder: mixed ? 'Mixed' : null });
     inp.addEventListener('input', () => { num.value = inp.value; out.textContent = fmt(+inp.value); onInput(+inp.value, false); });
     inp.addEventListener('change', () => onInput(+inp.value, true));
-    num.addEventListener('change', () => { inp.value = num.value; onInput(+num.value, true); });
+    num.addEventListener('change', () => { if (num.value === '') return; inp.value = num.value; onInput(+num.value, true); });
     return h('div.slider-row', h('div.slider-top', h('label', label), num), inp);
   };
   EU.tbBtn = (icon, title, onClick, { active = false, label = '', cls = '' } = {}) =>
     h('button.tb-btn' + (active ? '.on' : '') + (cls ? '.' + cls : ''), { title, onclick: onClick }, icon ? U.ic(icon, 18) : null, label ? h('span.tb-label', label) : null);
   EU.swatchBtn = (color, title, onPick, { text = false, opts = {} } = {}) => {
-    const b = h('button.tb-btn.swatch-btn', { title });
-    const css = R.cssPaint(color);
-    if (text) b.append(h('span.text-a', 'A'), h('span.text-bar', { style: { background: css } }));
-    else b.append(h('span.swatch' + (!color || color === 'none' ? '.none' : ''), { style: { background: css } }));
+    const mixed = color === MIXED;
+    const b = h('button.tb-btn.swatch-btn', { title: mixed ? title + ': Mixed' : title });
+    const css = mixed ? '' : R.cssPaint(color);
+    if (text) b.append(h('span.text-a', 'A'), h('span.text-bar' + (mixed ? '.mixed' : ''), { style: { background: css } }));
+    else b.append(h('span.swatch' + (mixed ? '.mixed' : !color || color === 'none' ? '.none' : ''), { style: { background: css } }));
     b.onclick = () => EU.colorPicker(b, color, onPick, opts);
     return b;
   };
@@ -236,7 +259,7 @@
   EU.colorPicker = (anchor, current, onPick, { gradients = true, none = false } = {}) => {
     const sw = (c) => h('button.color-sw' + (c === current ? '.on' : ''), { title: c.startsWith('grad:') ? 'Gradient' : c, style: { background: R.cssPaint(c) }, onclick: () => onPick(c, true) });
     const cur = U.isColor(current) ? current : '#8c52ff';
-    const hex = h('input.input.hex', { value: U.isColor(current) ? current : '', placeholder: '#rrggbb' });
+    const hex = h('input.input.hex', { value: U.isColor(current) ? current : '', placeholder: current === MIXED ? 'Mixed' : '#rrggbb' });
     hex.addEventListener('change', () => {
       let v = hex.value.trim();
       if (!v.startsWith('#')) v = '#' + v;
@@ -287,6 +310,7 @@
   EU.refreshToolbar = () => {
     const tb = EU.toolbar;
     if (!tb || !E.d) return;
+    findCount();
     tb.innerHTML = '';
     const els = E.selEls();
     const page = E.page();
@@ -326,7 +350,8 @@
     }
     // shape text being typed for the first time is still empty
     const editing = E.editingId === el.id;
-    if (same && (el.type === 'text' || (el.type === 'shape' && (el.text || editing)))) textTools(add, sep, el);
+    if (same && (el.type === 'text' || (el.type === 'shape' && (el.text || editing)))) textTools(add, sep, el, els);
+    if (!same) mixedTools(add, sep, els);
     if (same && el.type === 'shape') {
       if (el.asset) {
         add(
@@ -335,14 +360,14 @@
           EU.tbBtn('x', 'Remove image from frame', () => { E.endCrop(); EU.apply((x) => ['asset', 'nw', 'nh', 'fit'].forEach((k) => delete x[k])); }, { label: 'Detach' })
         );
       } else {
-        add(EU.swatchBtn(el.fill, 'Fill colour', (c, fin) => EU.apply((x) => (x.fill = c), fin), { opts: { none: true } }));
+        add(EU.swatchBtn(EU.common(els, (x) => x.fill), 'Fill colour', (c, fin) => EU.apply((x) => (x.fill = c), fin), { opts: { none: true } }));
         if (el.frame && els.length === 1) add(EU.tbBtn('image', 'Add a photo to the frame', () => EU.openPanel('uploads', 'frame'), { label: 'Add photo' }));
       }
       add(borderBtn(el));
       if (['rect', 'rounded'].includes(el.shape)) add(radiusBtn(el, 'radius'));
       // frames hold photos, not text
       if (!el.text && !editing && !el.frame && !el.asset) add(EU.tbBtn('text', 'Add text', () => E.editText(el)));
-      add(EU.tbBtn('effects', 'Shadow', () => EU.apply((x) => (x.shadow = !x.shadow)), { active: !!el.shadow }));
+      add(shadowBtn(els));
     }
     if (same && el.type === 'image') {
       add(
@@ -350,35 +375,35 @@
         els.length === 1 ? cropBtn(el) : null,
         EU.tbBtn('flip', 'Flip', (e) => U.menu(e.currentTarget, [{ label: 'Flip horizontal', icon: 'flip', onClick: () => E.flip('h') }, { label: 'Flip vertical', icon: 'flip', onClick: () => E.flip('v') }]), { label: 'Flip' }),
         radiusBtn(el, 'radius'),
-        EU.tbBtn('effects', 'Shadow', () => EU.apply((x) => (x.shadow = !x.shadow)), { active: !!el.shadow })
+        shadowBtn(els)
       );
     }
     if (same && el.type === 'line') {
       add(
-        EU.swatchBtn(el.stroke, 'Line colour', (c, fin) => EU.apply((x) => (x.stroke = c), fin), { opts: { gradients: false } }),
+        EU.swatchBtn(EU.common(els, (x) => x.stroke), 'Line colour', (c, fin) => EU.apply((x) => (x.stroke = c), fin), { opts: { gradients: false } }),
         lineStyleBtn(el),
         headSelect('start', el), headSelect('end', el),
         EU.tbBtn('line', 'Elbowed connector', () => EU.apply((x) => { x.elbow = !x.elbow; x.curved = false; }), { active: el.elbow, label: 'Elbow' }),
         EU.tbBtn('line', 'Curved line', () => EU.apply((x) => { x.curved = !x.curved; x.elbow = false; }), { active: el.curved, label: 'Curve' })
       );
     }
-    if (same && el.type === 'draw') add(EU.swatchBtn(el.stroke, 'Colour', (c, fin) => EU.apply((x) => (x.stroke = c), fin), { opts: { gradients: false } }), sizeBtn('Thickness', el.strokeWidth, 1, 80, (v, f) => EU.apply((x) => (x.strokeWidth = v), f)));
-    if (same && el.type === 'icon') add(EU.swatchBtn(el.fill, 'Colour', (c, fin) => EU.apply((x) => (x.fill = c), fin)), EU.tbBtn('flip', 'Flip horizontal', () => E.flip('h')));
+    if (same && el.type === 'draw') add(EU.swatchBtn(EU.common(els, (x) => x.stroke), 'Colour', (c, fin) => EU.apply((x) => (x.stroke = c), fin), { opts: { gradients: false } }), sizeBtn('Thickness', el.strokeWidth, 1, 80, (v, f) => EU.apply((x) => (x.strokeWidth = v), f)));
+    if (same && el.type === 'icon') add(EU.swatchBtn(EU.common(els, (x) => x.fill), 'Colour', (c, fin) => EU.apply((x) => (x.fill = c), fin)), EU.tbBtn('flip', 'Flip horizontal', () => E.flip('h')));
     if (same && el.type === 'emoji') add(EU.tbBtn('flip', 'Flip horizontal', () => E.flip('h')));
     if (same && el.type === 'chart') {
       add(
         EU.tbBtn('chart', 'Edit chart data', () => EU.openPanel('chart'), { label: 'Edit data' }),
         selectTb(['bar', 'line', 'area', 'pie', 'donut'], el.chart, (v) => EU.apply((x) => (x.chart = v))),
-        EU.swatchBtn(el.colors?.[0], 'Main colour', (c, fin) => EU.apply((x) => (x.colors = [c, ...(x.colors || []).slice(1)]), fin), { opts: { gradients: false } })
+        EU.swatchBtn(EU.common(els, (x) => x.colors?.[0]), 'Main colour', (c, fin) => EU.apply((x) => (x.colors = [c, ...(x.colors || []).slice(1)]), fin), { opts: { gradients: false } })
       );
     }
     if (same && el.type === 'table') {
       add(
         EU.tbBtn('table', 'Edit table', () => EU.openPanel('table'), { label: 'Edit table' }),
-        EU.swatchBtn(el.headerFill, 'Header colour', (c, fin) => EU.apply((x) => (x.headerFill = c), fin), { opts: { gradients: false } }),
-        EU.swatchBtn(el.fill, 'Cell colour', (c, fin) => EU.apply((x) => (x.fill = c), fin), { opts: { gradients: false } }),
-        EU.swatchBtn(el.color, 'Text colour', (c, fin) => EU.apply((x) => (x.color = c), fin), { text: true, opts: { gradients: false } }),
-        fontBtn(el)
+        EU.swatchBtn(EU.common(els, (x) => x.headerFill), 'Header colour', (c, fin) => EU.apply((x) => (x.headerFill = c), fin), { opts: { gradients: false } }),
+        EU.swatchBtn(EU.common(els, (x) => x.fill), 'Cell colour', (c, fin) => EU.apply((x) => (x.fill = c), fin), { opts: { gradients: false } }),
+        EU.swatchBtn(EU.common(els, (x) => x.color), 'Text colour', (c, fin) => EU.apply((x) => (x.color = c), fin), { text: true, opts: { gradients: false } }),
+        fontBtn(el, els)
       );
     }
     if (els.length > 1) {
@@ -390,7 +415,7 @@
       sep(),
       EU.tbBtn('animate', 'Animate', () => EU.openPanel('animate'), { label: 'Animate' }),
       EU.tbBtn('position', 'Position', () => EU.openPanel('position'), { label: 'Position' }),
-      EU.tbBtn('transp', 'Transparency', (e) => EU.sliderPopover(e.currentTarget, [EU.slider('Transparency', Math.round((el.opacity ?? 1) * 100), 0, 100, 1, (v, f) => EU.apply((x) => (x.opacity = v / 100), f), (v) => v + '%')])),
+      EU.tbBtn('transp', 'Transparency', (e) => EU.sliderPopover(e.currentTarget, [EU.slider('Transparency', Math.round((el.opacity ?? 1) * 100), 0, 100, 1, (v, f) => EU.apply((x) => (x.opacity = v / 100), f), (v) => v + '%', { mixed: EU.common(els, (x) => x.opacity ?? 1) === MIXED })])),
       el.link ? EU.tbBtn('link', 'Link: ' + el.link, () => EU.linkDialog(), { active: true }) : null,
       EU.tbBtn('more', 'More', (e) => EU.contextMenu(e.currentTarget))
     );
@@ -405,18 +430,23 @@
     const set = (v) => { const pg = E.d.pages.find((x) => x.id === page.id); if (pg) { pg.transition = v; E.changed({ all: true }); } };
     U.menu(anchor, M.TRANSITIONS.map(([v, l]) => ({ label: l + (page.transition === v ? '  ✓' : ''), onClick: () => set(v) })));
   }
-  function textTools(add, sep, el) {
+  function textTools(add, sep, el, els) {
+    // on when all of them have it
+    const flag = (icon, title, key) => {
+      const on = els.every((x) => x[key]);
+      return EU.tbBtn(icon, title, () => EU.apply((x) => (x[key] = !on)), { active: on });
+    };
     add(
-      fontBtn(el),
-      sizeStepper(el),
-      EU.swatchBtn(el.color, 'Text colour', (c, fin) => EU.apply((x) => (x.color = c), fin), { text: true }),
-      EU.tbBtn('bold', 'Bold (Ctrl+B)', () => EU.apply((x) => (x.bold = !el.bold)), { active: el.bold }),
-      EU.tbBtn('italic', 'Italic (Ctrl+I)', () => EU.apply((x) => (x.italic = !el.italic)), { active: el.italic }),
-      EU.tbBtn('underline', 'Underline (Ctrl+U)', () => EU.apply((x) => (x.underline = !el.underline)), { active: el.underline }),
-      EU.tbBtn('strike', 'Strikethrough', () => EU.apply((x) => (x.strike = !el.strike)), { active: el.strike }),
-      EU.tbBtn('case', 'Uppercase', () => EU.apply((x) => (x.upper = !el.upper)), { active: el.upper }),
+      fontBtn(el, els),
+      sizeStepper(el, els),
+      EU.swatchBtn(EU.common(els, (x) => x.color), 'Text colour', (c, fin) => EU.apply((x) => (x.color = c), fin), { text: true }),
+      flag('bold', 'Bold (Ctrl+B)', 'bold'),
+      flag('italic', 'Italic (Ctrl+I)', 'italic'),
+      flag('underline', 'Underline (Ctrl+U)', 'underline'),
+      flag('strike', 'Strikethrough', 'strike'),
+      flag('case', 'Uppercase', 'upper'),
       EU.tbBtn({ left: 'alignl', center: 'alignc', right: 'alignr', justify: 'alignj' }[el.align] || 'alignl', 'Alignment', () => {
-        const order = ['left', 'center', 'right'];
+        const order = ['left', 'center', 'right', 'justify'];
         const next = order[(order.indexOf(el.align) + 1) % order.length];
         EU.apply((x) => (x.align = next));
       }),
@@ -426,23 +456,48 @@
         EU.apply((x) => (x.list = next));
       }, { active: el.list && el.list !== 'none' }),
       EU.tbBtn('spacing', 'Spacing', (e) => EU.sliderPopover(e.currentTarget, [
-        EU.slider('Letter spacing', el.spacing || 0, -200, 800, 10, (v, f) => EU.apply((x) => (x.spacing = v), f)),
-        EU.slider('Line spacing', el.lh || 1.3, 0.5, 2.5, 0.05, (v, f) => EU.apply((x) => (x.lh = v), f)),
+        EU.slider('Letter spacing', el.spacing || 0, -200, 800, 10, (v, f) => EU.apply((x) => (x.spacing = v), f), undefined, { mixed: EU.common(els, (x) => x.spacing || 0) === MIXED }),
+        EU.slider('Line spacing', el.lh || 1.3, 0.5, 2.5, 0.05, (v, f) => EU.apply((x) => (x.lh = v), f), undefined, { mixed: EU.common(els, (x) => x.lh || 1.3) === MIXED }),
       ])),
       el.type === 'text' ? EU.tbBtn('effects', 'Effects', () => EU.openPanel('effects'), { label: 'Effects' }) : null,
       sep()
     );
   }
-  function fontBtn(el) {
-    const b = h('button.tb-btn.font-btn', { title: 'Font', style: { fontFamily: M.fontStack(el.font) } }, h('span', el.font || 'Inter'), U.ic('down', 14));
-    b.onclick = () => EU.fontPicker(b, el.font, (f) => EU.apply((x) => (x.font = f)));
+  // font and size controls change the elements in `els` that have them (a mixed selection holds others too)
+  function fontBtn(el, els = [el]) {
+    const f = EU.common(els, (x) => x.font || 'Inter'), ids = new Set(els.map((x) => x.id));
+    const b = h('button.tb-btn.font-btn', { title: f === MIXED ? 'Font: Mixed' : 'Font', style: { fontFamily: M.fontStack(f === MIXED ? el.font : f) } }, h('span', f === MIXED ? 'Mixed' : f), U.ic('down', 14));
+    b.onclick = () => EU.fontPicker(b, f, (v) => EU.apply((x) => ids.has(x.id) && (x.font = v)));
     return b;
   }
-  function sizeStepper(el) {
-    const inp = h('input.num.fs', { type: 'number', min: 1, max: 2000, value: U.round(el.size, 1), title: 'Font size' });
-    inp.addEventListener('change', () => EU.apply((x) => (x.size = U.clamp(+inp.value || 12, 1, 2000))));
-    const step = (d) => EU.apply((x) => (x.size = U.clamp(Math.round(x.size + d), 1, 2000)));
+  function sizeStepper(el, els = [el]) {
+    const v = EU.common(els, (x) => U.round(x.size, 1)), ids = new Set(els.map((x) => x.id));
+    const inp = h('input.num.fs', { type: 'number', min: 1, max: 2000, value: v === MIXED ? '' : v, placeholder: v === MIXED ? 'Mixed' : null, title: 'Font size' });
+    inp.addEventListener('change', () => inp.value !== '' && EU.apply((x) => ids.has(x.id) && (x.size = U.clamp(+inp.value || 12, 1, 2000))));
+    // each steps from its own size
+    const step = (d) => EU.apply((x) => ids.has(x.id) && (x.size = U.clamp(Math.round(x.size + d), 1, 2000)));
     return h('div.stepper', h('button', { title: 'Smaller', onclick: () => step(-1) }, '−'), inp, h('button', { title: 'Bigger', onclick: () => step(1) }, '+'));
+  }
+  // Several kinds of element: one colour (each takes it where its own toolbar's first colour goes), font and size
+  // for those with text, and a shadow.
+  const PAINT = { text: 'color', shape: 'fill', icon: 'fill', line: 'stroke', draw: 'stroke', table: 'headerFill', chart: 'colors' };
+  const painted = (x) => !!PAINT[x.type] && !(x.type === 'shape' && x.asset);
+  const paintOf = (x) => (x.type === 'chart' ? x.colors?.[0] : x[PAINT[x.type]]);
+  const setPaint = (x, c) => (x.type === 'chart' ? (x.colors = [c, ...(x.colors || []).slice(1)]) : (x[PAINT[x.type]] = c));
+  function mixedTools(add, sep, els) {
+    const paint = els.filter(painted), fonts = els.filter((x) => textLike(x) || x.type === 'table' || x.type === 'chart');
+    const sized = fonts.filter((x) => x.type !== 'chart'), shadowed = els.filter((x) => x.type !== 'line');
+    // gradients only where every element can draw one
+    if (paint.length) add(EU.swatchBtn(EU.common(paint, paintOf), 'Colour', (c, fin) => EU.apply((x) => painted(x) && setPaint(x, c), fin), { opts: { gradients: paint.every((x) => ['text', 'shape', 'icon'].includes(x.type)) } }));
+    if (fonts.length) add(fontBtn(fonts[0], fonts));
+    if (sized.length) add(sizeStepper(sized[0], sized));
+    if (shadowed.length) add(shadowBtn(shadowed));
+    add(sep());
+  }
+  // on when every one of `els` has a shadow; a click gives them all the other state
+  function shadowBtn(els) {
+    const v = EU.common(els, (x) => !!x.shadow), ids = new Set(els.map((x) => x.id));
+    return EU.tbBtn('effects', v === MIXED ? 'Shadow: Mixed' : 'Shadow', () => EU.apply((x) => ids.has(x.id) && (x.shadow = v !== true)), { active: v === true, cls: v === MIXED ? 'mixed' : '' });
   }
   function sizeBtn(label, val, min, max, fn) {
     return EU.tbBtn('spacing', label, (e) => EU.sliderPopover(e.currentTarget, [EU.slider(label, val, min, max, 1, fn)]));
@@ -515,6 +570,7 @@
         { label: 'Paste in place', icon: 'copy', shortcut: 'Ctrl+Shift+V', onClick: () => E.paste({ inPlace: true }), disabled: !E.clip },
         { label: 'Select all', icon: 'grid', shortcut: 'Ctrl+A', onClick: () => E.selectAll() },
         E.page().bg?.asset ? { label: 'Adjust background', icon: 'crop', onClick: () => E.startCrop('bg') } : null,
+        { label: 'Layers', icon: 'layers', onClick: () => EU.openLayers() },
         { divider: true },
         { label: 'Add page', icon: 'addpage', onClick: () => E.addPage(E.pi + 1) },
         { label: 'Duplicate page', icon: 'copy', onClick: () => E.duplicatePage(E.pi) },
@@ -529,6 +585,10 @@
       { label: 'Paste in place', icon: 'copy', shortcut: 'Ctrl+Shift+V', onClick: () => E.paste({ inPlace: true }), disabled: !E.clip },
       { label: 'Duplicate', icon: 'copy', shortcut: 'Ctrl+D', onClick: () => E.duplicate() },
       { label: 'Delete', icon: 'trash', shortcut: 'Del', onClick: () => E.deleteSel(), danger: true },
+      { divider: true },
+      { label: 'Select similar', icon: 'shapes', onClick: () => E.selectSimilar() },
+      { label: 'Select all on page', icon: 'grid', shortcut: 'Ctrl+A', onClick: () => E.selectAll() },
+      { label: 'Rename…', icon: 'text', onClick: () => A.P.renameLayer(), disabled: els.length > 1 && !grouped },
       { divider: true },
       { label: 'Copy style', icon: 'effects', shortcut: 'Ctrl+Alt+C', onClick: () => E.copyStyle() },
       { label: 'Paste style', icon: 'effects', shortcut: 'Ctrl+Alt+V', onClick: () => E.pasteStyle(), disabled: !E.styleClip },
@@ -570,6 +630,7 @@
       { label: 'Create new design', icon: 'plus', onClick: () => A.Home.createMenu(anchor) },
       { label: E.showRulers ? 'Hide rulers' : 'Show rulers', icon: 'custom', shortcut: '', onClick: () => { E.showRulers = !E.showRulers; E.drawOverlay(); } },
       { label: E.snapOn() ? 'Turn off snapping' : 'Turn on snapping', icon: 'magnet', onClick: () => E.toggleSnap() },
+      { label: 'Find and replace', icon: 'search', shortcut: 'Ctrl+F', onClick: () => EU.findBar() },
       { label: 'Add guide…', icon: 'grid', onClick: async () => { const v = await U.prompt('Guide position, e.g. "x 540" or "y 300"', 'x ' + Math.round(d.width / 2)); const m = v && v.match(/([xy])\s*(-?\d+)/i); if (m) { d.guides.push({ axis: m[1].toLowerCase(), pos: +m[2] }); E.changed({ toolbar: false }); } } },
       { label: 'Clear guides', icon: 'x', onClick: () => { d.guides = []; E.changed({ toolbar: false }); }, disabled: !d.guides.length },
       { divider: true },
@@ -637,6 +698,161 @@
     EU.openPanel('comments', c);
   };
 
+  // ---------- find & replace ----------
+  // Text boxes, shape text and table cells (not formulas) on every page, each page in reading order; hidden
+  // elements are left out.
+  const find = (EU.find = { q: '', repl: '', matchCase: false, word: false, cur: null });
+  // matches sort by [page, element in reading order, table cell, offset]
+  const cmpKey = (a, b) => {
+    for (let i = 0; i < 4; i++) if (a.key[i] !== b.key[i]) return a.key[i] - b.key[i];
+    return 0;
+  };
+  EU.findMatches = (q = find.q, { matchCase = find.matchCase, word = find.word } = {}) => {
+    if (!q) return [];
+    const src = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(word ? `(?<![\\p{L}\\p{N}_])${src}(?![\\p{L}\\p{N}_])` : src, 'gu' + (matchCase ? '' : 'i'));
+    const out = [];
+    E.d.pages.forEach((p, pi) => {
+      const els = p.elements.filter((x) => ['text', 'shape', 'table'].includes(x.type) && !x.hidden).sort((a, b) => a.y - b.y || a.x - b.x);
+      els.forEach((el, k) => {
+        const texts = el.type === 'table' ? el.cells.flatMap((row, r) => row.map((c, ci) => [String(c ?? ''), [r, ci]])) : [[el.text || '', null]];
+        texts.forEach(([s, cell], ti) => {
+          if (cell && s.startsWith('=')) return;
+          for (const m of s.matchAll(re)) out.push({ pi, el, cell, start: m.index, end: m.index + m[0].length, key: [pi, k, ti, m.index] });
+        });
+      });
+    });
+    return out;
+  };
+  const sameMatch = (a, b) => !!a && !!b && a.el.id === b.el.id && !cmpKey(a, b);
+  const textOf = (m) => (m.cell ? String(m.el.cells[m.cell[0]][m.cell[1]] ?? '') : m.el.text || '');
+  const putText = (m, v) => (m.cell ? (m.el.cells[m.cell[0]][m.cell[1]] = v) : (m.el.text = v));
+  const editable = (m) => !E.d.pages[m.pi].locked && !m.el.locked;
+  // Opens the bar (or moves to it); `replace` shows the replace row, `q` starts a new search.
+  EU.findBar = (replace = false, q = '') => {
+    if (!E.d || !E.scrollEl) return;
+    E.finishText();
+    let bar = U.$('.find-bar');
+    if (!bar) bar = buildFindBar();
+    if (q) { find.q = q; find.cur = null; }
+    if (replace) {
+      bar.classList.add('replace');
+      U.$('.find-more', bar).setAttribute('aria-expanded', 'true');
+    }
+    const qIn = U.$('.find-q', bar), rIn = U.$('.find-r', bar);
+    qIn.value = find.q;
+    const to = replace && find.q ? rIn : qIn;
+    to.focus();
+    to.select();
+    if (q) run(0);
+    else findCount();
+  };
+  function buildFindBar() {
+    find.cur = null;
+    const qIn = h('input.input.find-q', { placeholder: 'Find in design', 'aria-label': 'Find', value: find.q });
+    const rIn = h('input.input.find-r', { placeholder: 'Replace with', 'aria-label': 'Replace with', value: find.repl });
+    const opt = (label, key) => h('label.check', h('input', { type: 'checkbox', checked: find[key], onchange: (e) => { find[key] = e.target.checked; run(0); } }), ' ' + label);
+    const bar = h('div.find-bar', { role: 'search', 'aria-label': 'Find and replace' },
+      h('div.find-row',
+        h('button.icon-btn.sm.find-more', { title: 'Replace (Ctrl+H)', 'aria-expanded': 'false', onclick: () => showReplace(!bar.classList.contains('replace')) }, U.ic('fwd', 16)),
+        qIn,
+        h('span.find-count', { 'aria-live': 'polite' }),
+        h('button.icon-btn.sm', { title: 'Previous (Shift+Enter)', onclick: () => run(-1) }, U.ic('up', 16)),
+        h('button.icon-btn.sm', { title: 'Next (Enter)', onclick: () => run(1) }, U.ic('down', 16)),
+        h('button.icon-btn.sm', { title: 'Close (Esc)', onclick: () => closeFind() }, U.ic('x', 16))
+      ),
+      h('div.find-row.find-opts', opt('Match case', 'matchCase'), opt('Whole word', 'word')),
+      h('div.find-row.find-rrow', rIn, h('button.btn.sm', { title: 'Replace (Enter)', onclick: () => replaceOne() }, 'Replace'), h('button.btn.sm', { title: 'Replace all (Ctrl+Enter)', onclick: () => replaceAll() }, 'Replace all'))
+    );
+    const showReplace = (on) => {
+      bar.classList.toggle('replace', on);
+      U.$('.find-more', bar).setAttribute('aria-expanded', String(on));
+      (on ? rIn : qIn).focus();
+    };
+    qIn.addEventListener('input', () => { find.q = qIn.value; run(0); });
+    rIn.addEventListener('input', () => (find.repl = rIn.value));
+    qIn.addEventListener('keydown', (e) => e.key === 'Enter' && (e.preventDefault(), run(e.shiftKey ? -1 : 1)));
+    rIn.addEventListener('keydown', (e) => e.key === 'Enter' && (e.preventDefault(), e.ctrlKey || e.metaKey ? replaceAll() : replaceOne()));
+    bar.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeFind();
+    });
+    E.scrollEl.parentNode.appendChild(bar);
+    return bar;
+  }
+  function closeFind() {
+    U.$('.find-bar')?.remove();
+    find.cur = null;
+    document.activeElement?.blur?.();
+  }
+  // the count follows every change while the bar is open
+  function findCount(list) {
+    const c = U.$('.find-bar .find-count');
+    if (!c || !E.d) return;
+    list = list || EU.findMatches();
+    const i = list.findIndex((m) => sameMatch(m, find.cur)), m = list[i];
+    c.textContent = !find.q ? '' : !list.length ? 'No results' : i >= 0 ? `${i + 1} of ${list.length}` : list.length + (list.length === 1 ? ' result' : ' results');
+    c.title = m ? `Page ${m.pi + 1} · ${EU.layerName(m.el)}` : '';
+  }
+  // dir 1 / -1: the next / previous match; 0: the current one, else the first from the current page on
+  function run(dir) {
+    E.finishText();
+    const list = EU.findMatches(), c = find.cur;
+    if (!list.length) { find.cur = null; return findCount(list); }
+    let i;
+    if (dir > 0) i = c ? list.findIndex((m) => cmpKey(m, c) > 0) : list.findIndex((m) => m.pi >= E.pi);
+    else if (dir < 0) i = c ? list.findLastIndex((m) => cmpKey(m, c) < 0) : list.findLastIndex((m) => m.pi <= E.pi);
+    else i = c ? list.findIndex((m) => cmpKey(m, c) >= 0) : list.findIndex((m) => m.pi >= E.pi);
+    if (i < 0) i = dir < 0 ? list.length - 1 : 0;
+    goTo(list[i]);
+    findCount(list);
+  }
+  // shows the match's page with its element selected and in view
+  function goTo(m) {
+    find.cur = m;
+    if (m.pi !== E.pi) E.setPage(m.pi, false);
+    E.enteredGroup = m.el.groupId || null;
+    E.select([m.el.id]);
+    const b = E.blocks[E.pi], sb = b && U.$('.sel-box', b.overlay);
+    if (!sb) return;
+    const r = sb.getBoundingClientRect(), s = E.scrollEl.getBoundingClientRect();
+    if (r.top < s.top || r.bottom > s.bottom) E.scrollEl.scrollTop += r.top + r.height / 2 - (s.top + s.height / 2);
+    if (r.left < s.left || r.right > s.right) E.scrollEl.scrollLeft += r.left + r.width / 2 - (s.left + s.width / 2);
+    E.drawOverlay();
+  }
+  function replaceOne() {
+    E.finishText();
+    const list = EU.findMatches(), m = list.find((x) => sameMatch(x, find.cur));
+    // nothing picked yet: the first press shows the match it would replace
+    if (!m) return run(0);
+    if (!editable(m)) return U.toast(E.d.pages[m.pi].locked ? 'This page is locked – unlock it to edit' : 'Unlock the element to edit it');
+    const s = textOf(m);
+    putText(m, s.slice(0, m.start) + find.repl + s.slice(m.end));
+    if (m.el.type === 'text') R.fitText(m.el);
+    E.changed({ all: true });
+    // carry on after the new text
+    find.cur = { ...m, key: [...m.key.slice(0, 3), m.start + find.repl.length - 0.5] };
+    run(1);
+  }
+  // one undo step for every match (locked pages and elements keep theirs)
+  function replaceAll() {
+    E.finishText();
+    const list = EU.findMatches();
+    if (!list.length) return findCount(list);
+    const todo = list.filter(editable), skipped = list.length - todo.length;
+    for (const m of [...todo].reverse()) {
+      const s = textOf(m);
+      putText(m, s.slice(0, m.start) + find.repl + s.slice(m.end));
+    }
+    new Set(todo.map((m) => m.el)).forEach((el) => el.type === 'text' && R.fitText(el));
+    if (todo.length) E.changed({ all: true });
+    find.cur = null;
+    findCount();
+    U.toast(`Replaced ${todo.length} ${todo.length === 1 ? 'match' : 'matches'}` + (skipped ? ` – ${skipped} locked ${skipped === 1 ? 'one' : 'ones'} left as they were` : ''), todo.length ? 'ok' : '');
+  }
+
   // ---------- quick menu ("/") ----------
   EU.quickMenu = () => {
     const cmds = [
@@ -646,6 +862,7 @@
       ['Bar chart', () => E.add(M.newChart('bar'))], ['Pie chart', () => E.add(M.newChart('pie'))], ['Line chart', () => E.add(M.newChart('line'))], ['Table', () => E.add(M.newTable())],
       ['Add page', () => E.addPage(E.pi + 1)], ['Duplicate page', () => E.duplicatePage(E.pi)],
       ['Tidy up', () => E.tidy()], ['Space evenly horizontally', () => E.distribute('h')], ['Space evenly vertically', () => E.distribute('v')], ['Hide / show', () => E.toggleHidden()],
+      ['Select similar', () => E.selectSimilar()], ['Select all on page', () => E.selectAll()], ['Layers', () => EU.openLayers()], ['Find', () => EU.findBar()], ['Find and replace', () => EU.findBar(true)],
       ['Draw', () => EU.openPanel('draw')], ['Upload files', () => EU.openPanel('uploads')], ['Templates', () => EU.openPanel('design')], ['Brand kit', () => EU.openPanel('brand')], ['AI tools', () => EU.openPanel('ai')], ['Apps', () => EU.openPanel('apps')],
       ['Present', () => A.Present.start()], ['Download', () => EU.downloadDialog()], ['Share', () => EU.shareDialog()], ['Resize', () => EU.resizeDialog()], ['Version history', () => EU.historyDialog()],
       ['Toggle rulers', () => { E.showRulers = !E.showRulers; E.drawOverlay(); }], ['Toggle snapping', () => E.toggleSnap()], ['Zoom to fit', () => { E.fit(); E.renderAll(); }], ['Keyboard shortcuts', () => A.Home.shortcuts()],
@@ -659,8 +876,8 @@
       cmds.filter(([n]) => n.toLowerCase().includes(q)).slice(0, 12).forEach(([n, fn], i) => list.appendChild(h('button.qm-item' + (i === 0 ? '.on' : ''), { onclick: () => { m.close(); fn(); } }, n)));
     };
     inp.addEventListener('input', render);
-    // the Enter must not reach a text box the action opens for typing
-    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); list.querySelector('.qm-item')?.click(); } });
+    // the Enter is the menu's own: it must not reach the editor (which edits a selected text with it) or a text box the action opens for typing
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); list.querySelector('.qm-item')?.click(); } });
     render();
     m = U.modal({ title: 'Quick actions', body: h('div', inp, list) });
   };

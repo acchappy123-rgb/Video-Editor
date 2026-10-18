@@ -688,7 +688,7 @@
       h('button.seg-btn' + (E.alignTo === v ? '.on' : ''), { 'aria-pressed': String(E.alignTo === v), onclick: () => { E.alignTo = v; EU.renderPanel(); } }, label)));
     if (E.alignTo !== 'key') return h('div', h('span.mini-label', 'Align to'), seg);
     // named with where it is, so look-alike shapes can be told apart
-    const name = (u) => (u.els.length > 1 ? `Group of ${u.els.length}` : layerName(u.els[0])) + ` · ${Math.round(u.box.x)}, ${Math.round(u.box.y)}`;
+    const name = (u) => (u.els.length > 1 ? `Group of ${u.els.length}` : EU.layerName(u.els[0])) + ` · ${Math.round(u.box.x)}, ${Math.round(u.box.y)}`;
     const pick = h('select.input', {}, h('option', { value: '' }, 'None – Shift-click an element'), us.map((u) => h('option', { value: u.els[0].id, selected: u === key ? true : null }, name(u))));
     pick.addEventListener('change', () => { E.keyId = pick.value || null; E.drawOverlay(); });
     return h('div', h('span.mini-label', 'Align to'), seg, h('label.field', h('span', 'Key object'), pick));
@@ -710,40 +710,213 @@
         body.append(section('Space evenly', h('label.field.gap-field', h('span', 'Spacing (px)'), gap), h('div.arr-grid', btn('split', 'Horizontally', () => E.distribute('h', g())), btn('spacing', 'Vertically', () => E.distribute('v', g())), btn('grid', 'Tidy up', () => E.tidy(g())))));
       }
       body.append(section('Advanced', posFields(els)));
-    } else {
-      const list = h('div.layers');
-      const items = [...E.els()].reverse();
-      items.forEach((el) => {
-        const ctx = { asset: (id) => S.assetURL(id), idp: 'l' + el.id, defs: [], page: E.page() };
-        const inner = R.elementSVG(el, ctx);
-        const row = h('div.layer' + (E.sel.includes(el.id) ? '.on' : ''), { draggable: 'true', onclick: (e) => E.select([el.id], e.shiftKey, e.shiftKey ? el.id : undefined) },
-          h('span.layer-thumb', { html: `<svg viewBox="${Math.round(el.x)} ${Math.round(el.y)} ${Math.max(1, Math.round(el.w))} ${Math.max(1, Math.round(el.h))}" width="40" height="30"><defs>${ctx.defs.join('')}</defs>${inner}</svg>` }),
-          h('span.layer-name', layerName(el)),
-          h('button.icon-btn.sm', { title: el.hidden ? 'Show' : 'Hide', onclick: (e) => { e.stopPropagation(); if (!E.canEdit()) return; el.hidden = !el.hidden; E.changed(); EU.renderPanel(); } }, U.ic(el.hidden ? 'eyeoff' : 'eye', 14)),
-          h('button.icon-btn.sm', { title: el.locked ? 'Unlock' : 'Lock', onclick: (e) => { e.stopPropagation(); if (!E.canEdit()) return; el.locked = !el.locked; E.changed(); EU.renderPanel(); } }, U.ic(el.locked ? 'lock' : 'unlock', 14))
-        );
-        row.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/x-layer', el.id));
-        row.addEventListener('dragover', (e) => e.preventDefault());
-        row.addEventListener('drop', (e) => {
-          e.preventDefault();
-          const id = e.dataTransfer.getData('text/x-layer');
-          if (!E.canEdit()) return;
-          const arr = E.els();
-          const from = arr.findIndex((x) => x.id === id), to = arr.findIndex((x) => x.id === el.id);
-          if (from < 0 || from === to) return;
-          const [m] = arr.splice(from, 1);
-          arr.splice(to, 0, m);
-          E.changed();
-          EU.renderPanel();
-        });
-        list.append(row);
-      });
-      if (!items.length) list.append(h('p.muted', 'This page is empty.'));
-      body.append(h('p.muted.small', 'Top of the list is in front. Drag to reorder.'), list);
-    }
+    } else body.append(...layersTab());
     return { title: 'Position', body };
   };
-  const layerName = (el) => el.name || (el.text && el.type !== 'emoji' ? '“' + el.text.slice(0, 24) + '”' : el.type === 'shape' ? (el.frame ? 'Frame' : 'Shape') : el.type === 'emoji' ? 'Sticker ' + el.text : el.type[0].toUpperCase() + el.type.slice(1));
+
+  // ---------- Layers ----------
+  // Front to back. A group is one collapsible row, where its front-most member is, with its members under it.
+  // Click selects, Shift-click a range, Ctrl/⌘-click toggles; double-click or F2 renames; drag or Alt+↑/↓ reorders.
+  const closedGroups = new Set();
+  let anchorKey = null, shown = new Map();
+  const groupName = (members) => members.find((x) => x.groupName)?.groupName || 'Group';
+  const layerItems = () => {
+    const front = [...E.els()].reverse(), out = [];
+    for (const el of front) {
+      const g = el.groupId ? front.filter((x) => x.groupId === el.groupId) : [];
+      if (g.length > 1) { if (g[0] === el) out.push({ key: 'g:' + el.groupId, gid: el.groupId, members: g, ids: g.map((x) => x.id) }); }
+      else out.push({ key: el.id, el, ids: [el.id] });
+    }
+    return out;
+  };
+  // the rows as listed: an open group is followed by its members
+  const shownRows = (items = layerItems()) => items.flatMap((it) => (it.gid && !closedGroups.has(it.gid) ? [it, ...it.members.map((m) => ({ key: m.id, el: m, ids: [m.id], parent: it }))] : [it]));
+  const layersSig = () => E.page()?.id + '|' + E.els().map((x) => [x.id, x.groupId, x.groupName, x.name, x.hidden, x.locked].join()).join(';');
+  const rowState = (ids) => { const k = ids.filter((id) => E.sel.includes(id)).length; return k && k === ids.length ? 'on' : k ? 'part' : ''; };
+  const layerRow = (key) => [...(EU.panelEl?.querySelectorAll('.layer') || [])].find((x) => x.dataset.key === key);
+  // some members of one group are picked inside it, as when the group is entered on the canvas
+  // `key`: the key object afterwards (the row Shift- or Ctrl-clicked into the selection); what was selected stays first
+  const pick = (ids, key = null) => {
+    ids = [...new Set([...E.sel.filter((id) => ids.includes(id)), ...ids])];
+    const els = ids.map((id) => E.byId(id)).filter(Boolean), g = els[0]?.groupId;
+    E.enteredGroup = g && els.every((x) => x.groupId === g) && E.els().some((x) => x.groupId === g && !ids.includes(x.id)) ? g : null;
+    E.select(els.map((x) => x.id), false, key && els.some((x) => x.id === key) ? key : null);
+  };
+  const clickRow = (r, e) => {
+    const rows = shownRows();
+    if (e.shiftKey) {
+      const to = rows.findIndex((x) => x.key === r.key);
+      // from the row last clicked, or the first selected one when the selection has moved on since
+      const has = (x) => x.ids.some((id) => E.sel.includes(id));
+      let from = rows.findIndex((x) => x.key === anchorKey && has(x));
+      if (from < 0) from = rows.findIndex(has);
+      if (from >= 0 && to >= 0) return pick([...new Set(rows.slice(Math.min(from, to), Math.max(from, to) + 1).flatMap((x) => x.ids))], r.ids[0]);
+    }
+    anchorKey = r.key;
+    if (e.ctrlKey || e.metaKey) return r.ids.every((id) => E.sel.includes(id)) ? pick(E.sel.filter((id) => !r.ids.includes(id)), E.keyId) : pick([...E.sel, ...r.ids], r.ids[0]);
+    pick(r.ids);
+  };
+  // The name turns into a field: Enter or clicking away keeps it, Esc puts the old one back, and an empty name
+  // goes back to the default one.
+  const renameRow = (row, r) => {
+    const els = r.members || [r.el], key = r.gid ? 'groupName' : 'name';
+    if (!E.canEdit()) return;
+    if (els.some((x) => x.locked)) return U.toast('Unlock the element to rename it');
+    const was = r.gid ? groupName(els).replace(/^Group$/, '') : els[0].name || '';
+    const inp = h('input.input.layer-input', { value: was, placeholder: r.gid ? 'Group' : EU.layerName({ ...r.el, name: '' }), maxlength: 80, 'aria-label': 'Layer name' });
+    let done = false;
+    const finish = (keep, refocus) => {
+      if (done) return;
+      done = true;
+      const v = inp.value.trim();
+      if (keep && E.d && E.els().includes(els[0]) && v !== was && E.canEdit()) {
+        els.forEach((x) => (v ? (x[key] = v) : delete x[key]));
+        E.changed();
+      }
+      if (!E.d) return;
+      EU.renderPanel();
+      if (refocus) layerRow(r.key)?.focus();
+    };
+    inp.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') finish(true, true);
+      else if (e.key === 'Escape') finish(false, true);
+    });
+    inp.addEventListener('blur', () => finish(true));
+    for (const t of ['click', 'dblclick', 'pointerdown']) inp.addEventListener(t, (e) => e.stopPropagation());
+    row.draggable = false;
+    U.$('.layer-name', row).replaceWith(inp);
+    inp.focus();
+    inp.select();
+  };
+  // Puts a row in front of (`before`) or behind another. An element dropped among a group's members joins that
+  // group and anywhere else leaves its own; a group moves whole and never into another. The page then lists, and
+  // stacks, every group's members together, and a group left with one member is dissolved.
+  const moveLayer = (key, dst, before) => {
+    const items = layerItems(), src = shownRows(items).find((x) => x.key === key);
+    if (!src || !dst || src.key === dst.key || (src.gid && dst.parent?.gid === src.gid) || !E.canEdit()) return;
+    const moving = src.members || [src.el];
+    if (moving.some((x) => x.locked)) return U.toast('Unlock the element to move it');
+    const order = items.flatMap((it) => it.members || [it.el]).filter((x) => !moving.includes(x));
+    const ref = src.gid && dst.parent ? dst.parent : dst;
+    const near = (ref.members || [ref.el]).filter((x) => !moving.includes(x));
+    order.splice(before ? order.indexOf(near[0]) : order.indexOf(near[near.length - 1]) + 1, 0, ...moving);
+    if (!src.gid) {
+      const el = moving[0], g = ref.parent;
+      if (!g) { delete el.groupId; delete el.groupName; }
+      else if (el.groupId !== g.gid) {
+        el.groupId = g.gid;
+        if (groupName(g.members) !== 'Group') el.groupName = groupName(g.members);
+        else delete el.groupName;
+      }
+    }
+    const count = {};
+    for (const x of order) if (x.groupId) count[x.groupId] = (count[x.groupId] || 0) + 1;
+    for (const x of order) if (x.groupId && count[x.groupId] < 2) { delete x.groupId; delete x.groupName; }
+    E.page().elements = order.reverse();
+    if (E.enteredGroup && !count[E.enteredGroup]) E.enteredGroup = null;
+    E.changed();
+    EU.renderPanel();
+  };
+  const layerKey = (e, r, row) => {
+    if (e.target !== row) return;
+    const k = e.key, rows = shownRows(), i = rows.findIndex((x) => x.key === r.key);
+    const focus = (x) => x && layerRow(x.key)?.focus();
+    if (e.altKey && (k === 'ArrowUp' || k === 'ArrowDown')) {
+      // down past the whole of an open group
+      const t = rows[k === 'ArrowUp' ? i - 1 : i + 1 + (r.gid && !closedGroups.has(r.gid) ? r.members.length : 0)];
+      if (t) moveLayer(r.key, t, k === 'ArrowUp');
+    } else if (k === 'ArrowUp' || k === 'ArrowDown') focus(rows[i + (k === 'ArrowUp' ? -1 : 1)]);
+    else if (k === 'Home' || k === 'End') focus(rows[k === 'Home' ? 0 : rows.length - 1]);
+    else if (k === 'ArrowLeft' || k === 'ArrowRight') {
+      if (r.gid && (k === 'ArrowLeft') !== closedGroups.has(r.gid)) {
+        if (k === 'ArrowLeft') closedGroups.add(r.gid);
+        else closedGroups.delete(r.gid);
+        EU.renderPanel();
+      } else if (r.parent && k === 'ArrowLeft') focus(r.parent);
+    } else if (k === 'Enter' || k === ' ') clickRow(r, e);
+    else if (k === 'F2') renameRow(row, r);
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  // a new selection only re-marks the rows, which keep their focus, a double-click and a drag
+  P.syncLayers = () => {
+    const list = EU.panelEl?.querySelector('.layers');
+    if (!list || EU.panelEl.dataset.p !== 'position' || state.posTab !== 'layers' || state.layersSig !== layersSig()) return false;
+    for (const row of list.querySelectorAll('.layer')) {
+      const st = rowState(shown.get(row.dataset.key) || []);
+      row.classList.toggle('on', st === 'on');
+      row.classList.toggle('part', st === 'part');
+      row.setAttribute('aria-selected', String(st === 'on'));
+    }
+    return true;
+  };
+  // the context menu's Rename: shows the selection's row (a whole group by its group row) and starts renaming it
+  P.renameLayer = () => {
+    const els = E.selEls(), g = els[0]?.groupId;
+    if (!els.length) return;
+    const whole = g && els.every((x) => x.groupId === g) && E.els().filter((x) => x.groupId === g).length === els.length;
+    if (!whole && els.length > 1) return;
+    if (g && !whole) closedGroups.delete(g);
+    EU.openLayers();
+    const key = whole ? 'g:' + g : els[0].id, row = layerRow(key), r = shownRows().find((x) => x.key === key);
+    if (row && r) { row.scrollIntoView({ block: 'nearest' }); renameRow(row, r); }
+  };
+  function layersTab() {
+    const items = layerItems(), rows = shownRows(items);
+    const list = h('div.layers', { role: 'tree', 'aria-label': 'Layers', 'aria-multiselectable': 'true' });
+    state.layersSig = layersSig();
+    shown = new Map(rows.map((r) => [r.key, r.ids]));
+    const thumb = (el) => {
+      const ctx = { asset: (id) => S.assetURL(id), idp: 'l' + el.id, defs: [], page: E.page() };
+      const inner = R.elementSVG({ ...el, hidden: false }, ctx);
+      return h('span.layer-thumb', { html: `<svg viewBox="${Math.round(el.x)} ${Math.round(el.y)} ${Math.max(1, Math.round(el.w))} ${Math.max(1, Math.round(el.h))}" width="40" height="30"><defs>${ctx.defs.join('')}</defs>${inner}</svg>` });
+    };
+    // hide and lock set every element of the row, to the opposite of what all of them have
+    const toggle = (els, key, e) => {
+      e.stopPropagation();
+      if (!E.canEdit()) return;
+      const v = !els.every((x) => x[key]);
+      els.forEach((x) => (x[key] = v));
+      E.changed();
+      EU.renderPanel();
+    };
+    for (const r of rows) {
+      const els = r.members || [r.el], hidden = els.every((x) => x.hidden), locked = els.every((x) => x.locked);
+      const open = r.gid && !closedGroups.has(r.gid), st = rowState(r.ids);
+      const row = h('div.layer' + (st ? '.' + st : '') + (hidden ? '.off' : '') + (r.parent ? '.member' : ''), {
+        draggable: 'true', tabindex: 0, role: 'treeitem', 'data-key': r.key, 'aria-level': r.parent ? 2 : 1, 'aria-selected': String(st === 'on'), 'aria-expanded': r.gid ? String(open) : null,
+      },
+        r.gid ? h('button.icon-btn.sm.layer-caret', { title: open ? 'Collapse group' : 'Expand group', tabindex: -1, onclick: (e) => { e.stopPropagation(); if (open) closedGroups.add(r.gid); else closedGroups.delete(r.gid); EU.renderPanel(); } }, U.ic(open ? 'down' : 'fwd', 14)) : null,
+        r.gid ? h('span.layer-thumb.grp', U.ic('group', 18)) : thumb(r.el),
+        h('span.layer-name', r.gid ? groupName(r.members) : EU.layerName(r.el)),
+        r.gid ? h('span.layer-count', String(r.members.length)) : null,
+        h('button.icon-btn.sm', { title: hidden ? 'Show' : 'Hide', onclick: (e) => toggle(els, 'hidden', e) }, U.ic(hidden ? 'eyeoff' : 'eye', 14)),
+        h('button.icon-btn.sm', { title: locked ? 'Unlock' : 'Lock', onclick: (e) => toggle(els, 'locked', e) }, U.ic(locked ? 'lock' : 'unlock', 14))
+      );
+      const above = (e) => { const b = row.getBoundingClientRect(); return e.clientY < b.top + b.height / 2; };
+      const unmark = () => row.classList.remove('drop-above', 'drop-below');
+      row.addEventListener('click', (e) => clickRow(r, e));
+      row.addEventListener('dblclick', (e) => !e.target.closest('button') && renameRow(row, r));
+      row.addEventListener('keydown', (e) => layerKey(e, r, row));
+      row.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/x-layer', r.key); e.dataTransfer.effectAllowed = 'move'; });
+      row.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        row.classList.toggle('drop-above', above(e));
+        row.classList.toggle('drop-below', !above(e));
+      });
+      row.addEventListener('dragleave', unmark);
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        unmark();
+        moveLayer(e.dataTransfer.getData('text/x-layer'), r, above(e));
+      });
+      list.append(row);
+    }
+    if (!items.length) list.append(h('p.muted', 'This page is empty.'));
+    return [h('p.muted.small', 'Top of the list is in front. Drag to reorder, double-click to rename.'), list];
+  }
 
   // ---------- Effects (text) ----------
   P.effects = () => {
@@ -1001,7 +1174,8 @@
     };
     if (arg && arg.draft) {
       const ta = h('textarea.input', { rows: 3, placeholder: 'Add a comment. Use @name to mention or assign someone.' });
-      body.append(section('New comment' + (arg.elId ? ' on element' : ''), ta, h('div.row', h('button.btn.primary', { onclick: () => { if (!ta.value.trim()) return; const c = { ...arg, text: ta.value.trim() }; delete c.draft; d.comments.push(c); E.changed({ toolbar: false }); EU.openPanel('comments'); } }, 'Comment'), h('button.btn', { onclick: () => EU.openPanel('comments') }, 'Cancel'))));
+      const on = arg.elId && E.d.pages.flatMap((p) => p.elements).find((x) => x.id === arg.elId);
+      body.append(section('New comment' + (on ? ' on ' + EU.layerName(on) : ''), ta, h('div.row', h('button.btn.primary', { onclick: () => { if (!ta.value.trim()) return; const c = { ...arg, text: ta.value.trim() }; delete c.draft; d.comments.push(c); E.changed({ toolbar: false }); EU.openPanel('comments'); } }, 'Comment'), h('button.btn', { onclick: () => EU.openPanel('comments') }, 'Cancel'))));
       setTimeout(() => ta.focus(), 30);
     }
     const showResolved = state.showResolved;
@@ -1009,11 +1183,11 @@
     const list = (d.comments || []).filter((c) => showResolved || !c.resolved);
     if (!list.length) body.append(h('p.muted', 'No comments yet.'));
     for (const c of list) {
-      const pageIdx = d.pages.findIndex((p) => p.id === c.pageId);
+      const pageIdx = d.pages.findIndex((p) => p.id === c.pageId), on = c.elId && d.pages[pageIdx]?.elements.find((x) => x.id === c.elId);
       const reply = h('input.input.sm', { placeholder: 'Reply…' });
       reply.addEventListener('keydown', (e) => { if (e.key === 'Enter' && reply.value.trim()) { c.replies.push({ author: me, text: reply.value.trim(), ts: Date.now() }); E.changed({ toolbar: false }); EU.renderPanel(); } });
       body.append(h('div.comment' + (c.resolved ? '.resolved' : '') + (arg === c.id ? '.on' : ''),
-        h('div.c-head', h('span.avatar.sm', c.author[0].toUpperCase()), h('b', c.author), h('span.muted.small', ' · ' + U.timeAgo(c.ts) + (pageIdx >= 0 ? ' · Page ' + (pageIdx + 1) : ''))),
+        h('div.c-head', h('span.avatar.sm', c.author[0].toUpperCase()), h('b', c.author), h('span.muted.small', ' · ' + U.timeAgo(c.ts) + (pageIdx >= 0 ? ' · Page ' + (pageIdx + 1) : '') + (on ? ' · ' + EU.layerName(on) : ''))),
         h('div.c-text', { onclick: () => { if (pageIdx >= 0) E.setPage(pageIdx); if (c.elId && E.byId(c.elId)) E.select([c.elId]); } }, fmt(c.text)),
         ...c.replies.map((r) => h('div.c-reply', h('b', r.author + ': '), fmt(r.text))),
         h('div.row', reply),

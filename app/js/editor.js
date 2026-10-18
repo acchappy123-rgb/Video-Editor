@@ -360,6 +360,8 @@
     A.EU.refreshToolbar();
     A.EU.refreshTimeline?.();
     A.EU.refreshPageInfo?.();
+    // the Layers list shows the new page (a click on that page goes on to select, which updates the other panels)
+    if (changed && A.EU.panel === 'position') A.EU.onSelectionChange?.();
   };
   // Scroll a page that isn't wholly in view to where page `from` is on screen, so switching pages keeps the same
   // part of the page in view; with `from` out of view it scrolls as little as needed.
@@ -450,10 +452,11 @@
   const groupMembers = (el) => (el.groupId ? E.els().filter((e) => e.groupId === el.groupId).map((e) => e.id) : [el.id]);
 
   // ---------- selection ----------
-  // A value typed into a toolbar or panel field is committed (its 'change' fires) before the selection moves on.
+  // A value typed into a toolbar or panel field is committed (its 'change' fires) before the selection moves on;
+  // the find bar keeps its focus while it moves the selection from match to match.
   const commitField = (scope = '*') => {
     const a = document.activeElement;
-    if (a && a !== E.textArea && a.matches('input, select, textarea') && a.closest(scope)) a.blur();
+    if (a && a !== E.textArea && a.matches('input, select, textarea') && a.closest(scope) && !a.closest('.find-bar')) a.blur();
   };
   // `key`: the key object (E.keyUnit) after the change; a new selection has none, an addition keeps it
   E.select = (ids, add = false, key) => {
@@ -1568,7 +1571,7 @@
         textTransform: el.upper ? 'uppercase' : 'none',
         lineHeight: el.lh || 1.3,
         letterSpacing: ((el.spacing || 0) / 1000) * el.size * z + 'px',
-        textAlign: el.align === 'justify' ? 'left' : el.align,
+        textAlign: el.align || 'left',
         color: String(el.color).startsWith('grad:') ? el.color.split(':')[1] : el.color,
         transform: `rotate(${el.rot || 0}deg)`,
         transformOrigin: `${(el.w / 2 - px - pw) * z}px ${(el.h / 2 - top) * z}px`,
@@ -1596,6 +1599,13 @@
       if (mod && k === 's') {
         ev.preventDefault();
         saveKey();
+      }
+      // find (or replace) what is selected in the text
+      if (mod && !ev.shiftKey && !ev.altKey && (k === 'f' || k === 'h')) {
+        ev.preventDefault();
+        const q = ta.value.slice(ta.selectionStart, ta.selectionEnd);
+        E.finishText();
+        return A.EU.findBar(k === 'h', q.includes('\n') ? '' : q);
       }
       if (mod && ['b', 'i', 'u'].includes(k)) {
         ev.preventDefault();
@@ -2121,17 +2131,26 @@
     E.enteredGroup = null;
     E.select(E.els().filter((e) => !e.hidden).map((e) => e.id));
   };
+  // Same type and look as anything selected: text by font, shapes and icons by fill, lines and drawings by colour.
+  const look = (el) => el.type + '|' + (el.type === 'text' ? el.font || 'Inter' : el.type === 'shape' ? (el.asset ? 'frame' : el.fill) : el.type === 'icon' ? el.fill : ['line', 'draw'].includes(el.type) ? el.stroke : '');
+  E.selectSimilar = () => {
+    const els = E.selEls();
+    if (!els.length) return U.toast('Select an element first');
+    const looks = new Set(els.map(look));
+    E.enteredGroup = null;
+    E.select(E.els().filter((e) => !e.hidden && looks.has(look(e))).map((e) => e.id));
+  };
   E.group = () => {
     const els = E.selEls();
     if (els.length < 2 || E.editEls().length < els.length) return;
     const g = U.uid('g_');
-    els.forEach((e) => (e.groupId = g));
+    els.forEach((e) => { e.groupId = g; delete e.groupName; });
     E.changed();
   };
   E.ungroup = () => {
     const els = E.editEls();
     if (!els.length) return;
-    els.forEach((e) => delete e.groupId);
+    els.forEach((e) => { delete e.groupId; delete e.groupName; });
     E.enteredGroup = null;
     E.changed();
   };
@@ -2421,6 +2440,11 @@
     // selects and sliders keep their own keys (arrows, type-ahead), a panel button its Enter and Space (adding
     // an item from the keyboard); the other shortcuts still work there
     const own = ae?.tagName === 'SELECT' ? !mod && !['delete', 'backspace', 'escape'].includes(k) : (ae?.type === 'range' && k.startsWith('arrow')) || (!mod && (k === 'enter' || k === ' ') && !!ae?.closest('.ed-panel button'));
+    // find & replace opens from anywhere in the editor, a field being typed in too
+    if (mod && !e.shiftKey && !e.altKey && (k === 'f' || k === 'h') && !document.querySelector('.modal-back') && !A.Present?.active) {
+      e.preventDefault();
+      return A.EU.findBar(k === 'h');
+    }
     if (typingIn(ae) || own) return;
     if (document.querySelector('.modal-back') || A.Present?.active) return;
     const stop = () => e.preventDefault();
@@ -2471,7 +2495,8 @@
         if (els.length) {
           stop();
           if (!E.canEdit()) return;
-          const key = { b: 'bold', i: 'italic', u: 'underline' }[k], v = !els[0][key];
+          // as the toolbar: on for all unless all of them have it
+          const key = { b: 'bold', i: 'italic', u: 'underline' }[k], v = !els.every((x) => x[key]);
           els.forEach((x) => { x[key] = v; if (x.type === 'text') fitText(x); });
           E.changed();
         }

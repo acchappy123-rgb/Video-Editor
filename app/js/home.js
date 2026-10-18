@@ -427,7 +427,7 @@
   H.shortcuts = () => {
     const rows = [
       ['T', 'Add text box'], ['R', 'Add rectangle'], ['C', 'Add circle'], ['L', 'Add line'], ['S', 'Sticky note (whiteboards)'], ['/', 'Quick actions menu'],
-      ['Ctrl/⌘ + D', 'Duplicate (moving the copy first repeats the step)'], ['Ctrl/⌘ + G', 'Group'], ['Shift + Ctrl/⌘ + G', 'Ungroup'], ['Ctrl/⌘ + C / X / V', 'Copy / cut / paste'], ['Shift + Ctrl/⌘ + V', 'Paste in place'], ['Ctrl/⌘ + A', 'Select all'],
+      ['Ctrl/⌘ + D', 'Duplicate (moving the copy first repeats the step)'], ['Ctrl/⌘ + G', 'Group'], ['Shift + Ctrl/⌘ + G', 'Ungroup'], ['Ctrl/⌘ + C / X / V', 'Copy / cut / paste'], ['Shift + Ctrl/⌘ + V', 'Paste in place'], ['Ctrl/⌘ + A', 'Select all'], ['Ctrl/⌘ + F / H', 'Find / replace'], ['In Layers: F2 / Alt + ↑ ↓', 'Rename / move layer'],
       ['Ctrl/⌘ + Z / Y', 'Undo / redo'], ['Ctrl/⌘ + B / I / U', 'Bold / italic / underline'], ['Alt/Option + drag', 'Copy while dragging'], ['Shift + drag corner', 'Keep / free proportions'], ['Alt/Option + drag handle', 'Resize from the centre'], ['Shift + rotate', 'Snap rotation to 15°'],
       ['Arrow keys', 'Nudge 1px'], ['Shift + arrows', 'Nudge 10px'], ['Ctrl/⌘ + drag', 'Move or resize without snapping'], ['Enter', 'Edit selected text / crop selected photo'], ['Delete', 'Delete selection'], ['Esc', 'Deselect / exit tool'],
       ['Cropping: drag, arrows, + / −', 'Move / zoom the photo'], ['Cropping: Enter / Esc', 'Done / cancel'],

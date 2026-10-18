@@ -108,8 +108,9 @@
       const pw = prefix ? U.measure(prefix, font, ls) : 0;
       const avail = Math.max(el.size * 0.6, maxW - pw);
       let first = true, cur = '';
-      const push = (s) => {
-        lines.push({ t: s, prefix: first ? prefix : '', indent: pw });
+      // `end`: the paragraph's last line, which justified text leaves unstretched
+      const push = (s, end = false) => {
+        lines.push({ t: s, prefix: first ? prefix : '', indent: pw, end });
         first = false;
       };
       for (let w of p.split(/(\s+)/)) {
@@ -129,7 +130,7 @@
           }
         } else cur += w;
       }
-      push(cur.trimEnd());
+      push(cur.trimEnd(), true);
     }
     for (const l of lines) l.w = U.measure(l.prefix + l.t, font, ls) + (l.prefix ? 0 : l.indent);
     const lineH = el.size * (el.lh || 1.3);
@@ -166,9 +167,15 @@
     const ax = anchor === 'middle' ? box.x + box.w / 2 : anchor === 'end' ? box.x + box.w : box.x;
     const y0 = box.y + (box.valign ? (box.h - L.height) / 2 : 0);
     const pos = (l, i) => ({ x: anchor === 'start' && !l.prefix ? ax + l.indent : ax, y: y0 + i * L.lineH + (L.lineH - el.size) / 2 + el.size * 0.82 });
+    // justified lines widen their spaces to reach the right edge, sized from the whole line so typed-in words don't shift
+    const gaps = (t) => (t.match(/[  ]/g) || []).length;
+    const ws = L.lines.map((l) => (el.align === 'justify' && !l.end && gaps(l.t) ? Math.max(0, (box.w - l.w) / gaps(l.t)) : 0));
     const body = el.curve ? curvedText(el, ctx, chars) : lines.map((l, i) => {
-      const p = pos(l, i);
-      return `<tspan x="${n(p.x)}" y="${n(p.y)}">${esc(l.prefix + l.t) || ' '}</tspan>`;
+      const p = pos(l, i), at = `x="${n(p.x)}" y="${n(p.y)}"`;
+      if (!ws[i] || !l.t) return `<tspan ${at}>${esc(l.prefix + l.t) || ' '}</tspan>`;
+      // the bullet or number keeps its own spacing
+      const sp = ` word-spacing="${n(ws[i])}"`;
+      return l.prefix ? `<tspan ${at}>${esc(l.prefix)}</tspan><tspan${sp}>${esc(l.t)}</tspan>` : `<tspan ${at}${sp}>${esc(l.t)}</tspan>`;
     }).join('');
     const common = textAttrs(el) + ` text-anchor="${anchor}"`;
     const color = el.color || '#000';
@@ -218,7 +225,7 @@
         const rects = lines.map((l, i) => {
           if (!(l.prefix + l.t).trim()) return '';
           const p = pos(l, i);
-          const lw = U.measure(l.prefix + l.t, L.font, L.ls);
+          const lw = U.measure(l.prefix + l.t, L.font, L.ls) + gaps(l.t) * ws[i];
           const x = anchor === 'middle' ? p.x - lw / 2 : anchor === 'end' ? p.x - lw : p.x;
           return `<rect x="${n(x - pad)}" y="${n(y0 + i * L.lineH)}" width="${n(lw + pad * 2)}" height="${n(L.lineH + 0.5)}" rx="${n(rad)}" fill="${esc(eff.color || '#ffde59')}" opacity="${n(1 - (eff.transparency ?? 0) / 100)}"/>`;
         }).join('');
