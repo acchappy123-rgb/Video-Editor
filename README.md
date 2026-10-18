@@ -24,16 +24,17 @@ The builds are not code-signed, so your system may warn you the first time:
 - **Design types:** Docs, Whiteboards (stickies, timer, voting, grows as you work), Presentations, Social media sizes, Videos, Print (A4, posters, business cards…), Websites, Sheets, and any custom size in px, in, cm or mm.
 - **Editor:** pages with titles, plus hide, lock, duplicate, reorder and delete. Includes a timeline for videos and presentations, undo/redo, autosave and version history.
 - **Selecting and moving:** corner/side/rotate handles (also on multi-selections and groups, which turn about their centre and stretch along one side), smart pink guides with spacing labels, equal-spacing snaps, snapping while resizing, Alt-resize from the centre, Ctrl/⌘ to skip snapping (or turn it off in the File menu or the bottom bar), alt-drag to copy, multi-select, groups, a floating mini menu, a right-click menu, rulers and guides.
-- **Context toolbar** for text, shapes, images, lines, charts and tables. Also a Position panel (arrange, align, distribute, layers list, and live X/Y/W/H/rotation fields – line ends, length and angle for lines – that take sums like `1920/3`, `*2` or `50%`).
-- **Elements:** 24 shapes, lines and arrows, connectors that snap to shapes, graphics, stickers, frames, photo grids, device mockups, charts (bar, line, area, pie, donut), tables with formulas (`=SUM(B2:B6)`, `AVERAGE`, `MIN`, `MAX`, `COUNT`, arithmetic) and sticky notes.
+- **Context toolbar** for text, shapes, images, videos, lines, charts and tables, also for mixed selections (shared colour, font, size, transparency and shadow, shown as Mixed when they differ). Also a Position panel (arrange, align, distribute, a Layers tree with collapsible groups, renaming and drag-to-reorder, and live X/Y/W/H/rotation fields – line ends, length and angle for lines – that take sums like `1920/3`, `*2` or `50%`).
+- **Elements:** 24 shapes, lines and arrows, connectors that snap to shapes, graphics, stickers, frames, photo grids, device mockups, charts (bar, line, area, pie, donut), tables with formulas (`=SUM(B2:B6)`, `AVERAGE`, `MIN`, `MAX`, `COUNT`, arithmetic) and sticky notes. Panel items can be dragged to where they should go, and photos dropped onto a frame fill it.
 - **Text:** heading, subheading and body presets, font pairings, lists, letter and line spacing. Effects: Shadow, Lift, Hollow, Splice, Echo, Glitch, Neon, Background and Curve. You can upload your own fonts.
-- **Photos:** 12 filters with intensity, 14 adjustments, duotone, vignette, crop with ratios, flip and rounded corners. Background remover, magic eraser, expand and 2× upscale all run on-device.
+- **Photos:** 12 filters with intensity, 14 adjustments, duotone, vignette, crop with ratios (on the page or in the Crop panel, also for photos in frames and page backgrounds), flip and rounded corners. Background remover, magic eraser, expand and 2× upscale all run on-device.
+- **Videos:** clips with trim, speed, volume, loop and crop, a timeline playhead to preview any moment (tap `Space` to play), split at the playhead, and a soundtrack with start, volume and fades.
 - **Animation:** enter, emphasis and exit animations; page animations; transitions; motion paths you record by dragging; a soundtrack.
 - **Present:** fullscreen, transitions, autoplay, presenter view with notes, next slide and timer, and recording yourself (camera bubble and microphone).
 - **Brand Kit:** logos, colour palettes, heading/subheading/body fonts, photos, icons and brand voice. Brand colours appear at the top of every colour picker.
 - **Sharing and teamwork:** comments with @mentions, replies and resolve; version history; shareable design files; save as template; content planner with reminders.
 - **Export:** PNG (with transparency), JPG, PDF Standard, PDF Print (300 dpi, bleed, crop marks), SVG, MP4/WebM video, animated GIF, PowerPoint (.pptx), single-file website (HTML) and design files. Multi-page exports come as a ZIP.
-- **Keyboard shortcuts:** `T` text, `R` rectangle, `C` circle, `L` line, `/` quick actions, `Ctrl/⌘+D` duplicate, `Ctrl/⌘+G` group, arrows to nudge, `Ctrl/⌘+]` / `[` layer order, `Alt+A/H/D/W/V/S` align, `Shift+H/V` flip, `Ctrl/⌘+Shift+L` / `H` lock and hide, `Ctrl/⌘+Alt+C` / `V` copy and paste style, `Tab` to step through elements, `Enter` / `Esc` into and out of groups, and more (see the Help button on the home screen).
+- **Keyboard shortcuts:** `T` text, `R` rectangle, `C` circle, `L` line, `/` quick actions, `Ctrl/⌘+D` duplicate, `Ctrl/⌘+G` group, arrows to nudge, `Ctrl/⌘+]` / `[` layer order, `Alt+A/H/D/W/V/S` align, `Shift+H/V` flip, `Ctrl/⌘+Shift+L` / `H` lock and hide, `Ctrl/⌘+Alt+C` / `V` copy and paste style, `Tab` to step through elements, `Enter` / `Esc` into and out of groups, `Ctrl/⌘+Shift+V` paste in place, `Ctrl/⌘+F` / `H` find and replace, `Space`-drag or middle-drag to pan, `Shift+0/1/2` zoom to 100% / fit / selection, and more (see the Help button on the home screen).
 - **Arranging:** align to the selection, a key object (the element Shift-clicked last) or the page; space elements evenly or by an exact gap; tidy up a rough layout into an evenly spaced row, column or grid. Groups move as one.
 - **Mobile:** the side rail becomes a bottom bar, panels slide up as sheets, and the toolbar scrolls sideways.
 
@@ -89,6 +90,7 @@ app/js/model.js      Design types, fonts, element factories, libraries
 app/js/render.js     Model → SVG renderer (editor, thumbnails, exports, video)
 app/js/templates.js  Built-in templates
 app/js/export.js     PNG/JPG/SVG/PDF/GIF/video/PPTX/HTML/ZIP writers
+app/js/video.js      Video clips, timeline playhead, soundtrack mixing
 app/js/imagetools.js On-device photo tools
 app/js/ai.js         Optional AI features (bring your own key)
 app/js/editor*.js    Editor core and UI
@@ -100,7 +102,7 @@ app/js/home.js       Home, projects, templates, brand, planner, settings
 ## Known limitations
 
 - PDF, PowerPoint and GIF exports contain flattened page images, so text in them is not selectable or editable.
-- Importing PDF/PowerPoint files as editable designs, and video clips on the timeline, are not supported yet.
+- Importing PDF/PowerPoint files as editable designs is not supported yet.
 - Real-time co-editing needs a server, so it isn't included. Share design files instead.
 - Fonts are system fonts plus any you upload. Exact appearance can vary a little between operating systems.
 
