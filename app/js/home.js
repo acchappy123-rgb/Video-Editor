@@ -49,9 +49,9 @@
     if (pages) d.pages = pages;
     const t = M.type(type);
     if (type === 'doc' && !pages) {
-      const el = M.newText({ text: 'Untitled document', x: 72, y: 72, w: 672, size: 44, bold: true });
+      const el = M.sample(M.newText({ text: 'Untitled document', x: 72, y: 72, w: 672, size: 44, bold: true }));
       el.h = R.textHeight(el);
-      const p = M.newText({ text: 'Start writing here…', x: 72, y: 150, w: 672, size: 18, color: '#444' });
+      const p = M.sample(M.newText({ text: 'Start writing here…', x: 72, y: 150, w: 672, size: 18, color: '#444' }));
       p.h = R.textHeight(p);
       d.pages[0].elements.push(el, p);
     }
@@ -427,7 +427,7 @@
   H.shortcuts = () => {
     const rows = [
       ['T', 'Add text box'], ['R', 'Add rectangle'], ['C', 'Add circle'], ['L', 'Add line'], ['S', 'Sticky note (whiteboards)'], ['/', 'Quick actions menu'],
-      ['Ctrl/⌘ + D', 'Duplicate'], ['Ctrl/⌘ + G', 'Group'], ['Shift + Ctrl/⌘ + G', 'Ungroup'], ['Ctrl/⌘ + C / X / V', 'Copy / cut / paste'], ['Ctrl/⌘ + A', 'Select all'],
+      ['Ctrl/⌘ + D', 'Duplicate (moving the copy first repeats the step)'], ['Ctrl/⌘ + G', 'Group'], ['Shift + Ctrl/⌘ + G', 'Ungroup'], ['Ctrl/⌘ + C / X / V', 'Copy / cut / paste'], ['Shift + Ctrl/⌘ + V', 'Paste in place'], ['Ctrl/⌘ + A', 'Select all'],
       ['Ctrl/⌘ + Z / Y', 'Undo / redo'], ['Ctrl/⌘ + B / I / U', 'Bold / italic / underline'], ['Alt/Option + drag', 'Copy while dragging'], ['Shift + drag corner', 'Keep / free proportions'], ['Shift + rotate', 'Snap rotation to 15°'],
       ['Arrow keys', 'Nudge 1px'], ['Shift + arrows', 'Nudge 10px'], ['Ctrl/⌘ + drag', 'Move without snapping'], ['Enter', 'Edit selected text'], ['Delete', 'Delete selection'], ['Esc', 'Deselect / exit tool'],
       ['Ctrl/⌘ + + / − / 0', 'Zoom in / out / fit'], ['Ctrl/⌘ + Enter', 'Present (presentations)'], ['In present mode: ← → Space', 'Change page'], ['P / F', 'Presenter view / full screen'],

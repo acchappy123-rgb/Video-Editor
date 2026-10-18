@@ -465,7 +465,9 @@
       style: { left: box.x * z + 'px', top: box.y * z + 'px', width: box.w * z + 'px', height: box.h * z + 'px', transform: `rotate(${rot}deg)` },
     });
     if (!single) for (const e of els) { const bb = E.bbox(e); b.overlay.appendChild(U.h('div.sel-member', { style: { left: bb.x * z + 'px', top: bb.y * z + 'px', width: bb.w * z + 'px', height: bb.h * z + 'px' } })); }
-    if (!locked && E.editingId == null) {
+    // text being typed keeps its handles (above the text box), so a new text box can be widened while it is filled in
+    if (E.editingId) sb.style.zIndex = 4;
+    if (!locked) {
       const t = single?.type;
       const corners = !(t === 'text' && single.curve) ? ['nw', 'ne', 'sw', 'se'] : ['nw', 'ne', 'sw', 'se'];
       let sides = ['n', 's', 'e', 'w'];
@@ -486,6 +488,8 @@
         const mh = U.h('div.move-handle', { title: 'Move' }, U.ic('fullscreen', 14));
         mh.addEventListener('pointerdown', (e) => {
           e.stopPropagation();
+          // (text being typed keeps the focus, and goes on being typed into where it is moved to)
+          e.preventDefault();
           startMove(e, E.pi);
         });
         sb.appendChild(U.h('div.rot-wrap', rh, mh));
@@ -765,6 +769,7 @@
             const clones = M.cloneElements(els, 0, 0);
             E.page().elements.push(...clones);
             E.sel = clones.map((c) => c.id);
+            E.dupFrom(box0);
             els = clones;
           }
           orig = els.map((el) => ({ el, x: el.x, y: el.y, p1: el.p1 && { ...el.p1 }, p2: el.p2 && { ...el.p2 } }));
@@ -1158,7 +1163,9 @@
   const fitText = R.fitText;
   // a Word-style line break (\v) or page break (\f) starts a new line; other control characters are dropped
   const cleanText = (t) => t.replace(/\r\n?|[\v\f\u2028\u2029]/g, '\n').replace(/[\0-\x08\x0e-\x1f]/g, '');
-  E.editText = (el) => {
+  const SAMPLES = ['Text', 'Add a heading', 'Add a subheading', 'Add a little bit of body text', 'Add an idea', 'Start writing here…'];
+  // `from`: the panel button the text box was added with (from the keyboard); Escape returns the focus there.
+  E.editText = (el, { from } = {}) => {
     if (el.locked || !E.canEdit()) return;
     if (E.editingId) E.finishText();
     if (el.type === 'shape' && !el.text) {
@@ -1207,6 +1214,7 @@
       const t = cleanText(ta.value);
       if (t !== ta.value) { const at = Math.max(0, ta.selectionEnd - (ta.value.length - t.length)); ta.value = t; ta.setSelectionRange(at, at); }
       el.text = t;
+      delete el.placeholder;
       if (el.type === 'text') fitText(el);
       E.drawOverlay();
       E.scheduleSave();
@@ -1214,7 +1222,11 @@
     ta.addEventListener('keydown', (ev) => {
       ev.stopPropagation();
       const mod = ev.ctrlKey || ev.metaKey, k = ev.key?.toLowerCase();
-      if (ev.key === 'Escape') E.finishText();
+      if (ev.key === 'Escape') {
+        E.finishText();
+        // a text box added from a panel button with the keyboard hands the focus back to that button
+        if (from?.isConnected) from.focus({ preventScroll: true });
+      }
       if (mod && k === 's') {
         ev.preventDefault();
         saveKey();
@@ -1228,6 +1240,10 @@
       }
     });
     ta.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    // sample copy is taken whole: selected when editing starts and by a double-click, so typing replaces it
+    // (the list covers designs saved before the placeholder mark)
+    const sample = () => el.text && (el.placeholder === el.text || SAMPLES.includes(el.text));
+    ta.addEventListener('dblclick', () => sample() && ta.select());
     // the native menu (spelling, cut/copy/paste of text), not the element menu
     ta.addEventListener('contextmenu', (ev) => ev.stopPropagation());
     // moving to the toolbar, a panel, a popover or the zoom bar keeps editing (their redraw refocuses the text)
@@ -1239,7 +1255,7 @@
     E.textAreaStyle = style;
     b.overlay.appendChild(ta);
     ta.focus();
-    if (el.text === 'Text' || el.text === 'Add a heading' || el.text === 'Add a subheading' || el.text === 'Add a little bit of body text' || el.text === 'Add an idea') ta.select();
+    if (sample()) ta.select();
     else ta.setSelectionRange(ta.value.length, ta.value.length);
     A.EU.refreshToolbar();
   };
@@ -1302,25 +1318,45 @@
     }
     return free;
   };
+  const shift = (els, dx, dy) => els.forEach((el) => {
+    el.x += dx;
+    el.y += dy;
+    if (el.p1) { el.p1.x += dx; el.p1.y += dy; el.p2.x += dx; el.p2.y += dy; }
+  });
+  // an element of the same kind already sits exactly where `el` would be, moved by d/d (same corner or same centre)
+  const taken = (el, d = 0) => E.els().some((o) => {
+    if (o.type !== el.type || o.sticky !== el.sticky) return false;
+    const a = E.bbox(o), b = E.bbox(el);
+    return (Math.abs(a.x - b.x - d) < 1 && Math.abs(a.y - b.y - d) < 1) || (Math.abs(a.x + a.w / 2 - b.x - b.w / 2 - d) < 1 && Math.abs(a.y + a.h / 2 - b.y - b.h / 2 - d) < 1);
+  });
+  // Where the next add lands instead of the middle of the view: { i: page index, x, y } in page px (a drop).
+  // An add placed by its own coordinates (a photo grid) only takes the page.
+  E.dropAt = null;
   E.add = (els, { center = true, edit = false } = {}) => {
-    if (!E.d || !E.canEdit()) return false;
+    const at = E.dropAt, ev = window.event, ae = document.activeElement;
+    E.dropAt = null;
+    if (!E.d) return false;
+    if (at && at.i !== E.pi) E.setPage(at.i, false);
+    if (!E.canEdit()) return false;
     E.finishText();
     els = Array.isArray(els) ? els : [els];
     if (center) {
-      const box = E.unionBox(els);
-      const c = E.visibleCenter();
-      const dx = c.x - (box.x + box.w / 2), dy = c.y - (box.y + box.h / 2);
-      for (const el of els) {
-        el.x += dx;
-        el.y += dy;
-        if (el.p1) { el.p1.x += dx; el.p1.y += dy; el.p2.x += dx; el.p2.y += dy; }
-      }
+      const box = E.unionBox(els), c = at || E.visibleCenter();
+      shift(els, c.x - (box.x + box.w / 2), c.y - (box.y + box.h / 2));
+      // repeated adds step down and right instead of hiding each other
+      for (let k = 0; !at && k < 10 && els.some(taken); k++) shift(els, 20, 20);
     }
     E.page().elements.push(...els);
     E.sel = els.map((e) => e.id);
     E.changed();
     A.EU.onSelectionChange?.();
-    if (edit && els.length === 1) setTimeout(() => E.editText(els[0]), 20);
+    // a panel button clicked or dragged from lets go of the focus, so Space or Enter can't add the item again; one
+    // used from the keyboard keeps it (and gets it back when the new text is left with Escape)
+    const btn = ae?.closest?.('.ed-panel button, .ed-toolbar button, .ed-rail button, .qm-list button');
+    const keyed = btn && (ev?.type === 'click' ? !ev.detail : ev?.type === 'keydown');
+    // a touch screen's keyboard would cover the new text, so there it is only selected
+    if (edit && els.length === 1 && !coarse.matches) E.editText(els[0], { from: keyed ? btn : null });
+    else if (btn && !keyed && ev) btn.blur();
     return true;
   };
   // Fit an element so it isn't larger than ~60% of the page.
@@ -1339,9 +1375,9 @@
       subheading: { text: 'Add a subheading', size: base * 1.6, bold: true, font: brand.subheading || brand.heading || 'Inter' },
       body: { text: 'Add a little bit of body text', size: base, font: brand.body || 'Inter' },
     }[kind];
-    const el = M.newText({ ...conf, w: Math.min(W * 0.8, conf.size * conf.text.length * 0.62) });
+    const el = M.sample(M.newText({ ...conf, w: Math.min(W * 0.8, conf.size * conf.text.length * 0.62) }));
     el.h = R.textHeight(el);
-    return E.add(el) ? el : null;
+    return E.add(el, { edit: true }) ? el : null;
   };
   E.addShape = (shape, o = {}) => E.add(M.newShape(shape, { w: E.d.width * 0.25, h: E.d.width * 0.25 * (o.ratio || 1), fill: A.app.brand?.colors?.[0] || '#8c52ff', ...o }));
   E.addLine = (o = {}) => {
@@ -1350,9 +1386,9 @@
     M.syncLineBox(l);
     E.add(l);
   };
+  const imageEl = (a, frac = 0.6, off = 0) => E.fitSize(M.newImage(a, { x: off, y: off, w: a.w, h: a.h }), frac);
   E.addImageAsset = (asset, opts = {}) => {
-    const el = M.newImage(asset, { x: 0, y: 0, w: asset.w, h: asset.h });
-    E.fitSize(el, opts.frac || 0.6);
+    const el = imageEl(asset, opts.frac);
     E.add(el, opts);
     return el;
   };
@@ -1366,17 +1402,27 @@
     E.sel = [];
     E.changed();
   };
+  // Duplicating the copy just made repeats its step from the original: duplicate, move it, duplicate again
+  // continues the row. `lastDup` holds that copy (its ids) and where its original was.
+  let lastDup = null;
+  const selKey = () => [...E.sel].sort().join();
   E.duplicate = () => {
     if (!E.sel.length || !E.canEdit()) return;
     E.finishText();
     const els = E.selEls();
     if (!els.length) return;
-    const clones = M.cloneElements(els, 20, 20, E.page());
+    const box = E.unionBox(els), last = lastDup?.page === E.page().id && lastDup.key === selKey() && lastDup;
+    let dx = last ? box.x - last.x : 20, dy = last ? box.y - last.y : 20;
+    if (!dx && !dy) dx = dy = 20;
+    const clones = M.cloneElements(els, dx, dy, E.page());
     E.page().elements.push(...clones);
     E.sel = clones.map((c) => c.id);
+    E.dupFrom(box);
     E.changed();
     A.EU.onSelectionChange?.();
   };
+  // the selection is a copy of what was in `box` (Duplicate, Alt-drag)
+  E.dupFrom = (box) => (lastDup = { page: E.page().id, key: selKey(), x: box.x, y: box.y });
   // `native`: called from a copy/cut event, which puts the marker on the system clipboard itself.
   E.copy = (native = false) => {
     const els = E.selEls();
@@ -1388,11 +1434,14 @@
     return true;
   };
   addEventListener('blur', () => (E.clipFresh = false));
-  E.paste = () => {
+  // A paste lands where the elements were copied from (on any page, and after a cut), or, where that is taken
+  // (beside the original, after an earlier paste), on the first free step down and right; in place lands there anyway.
+  E.paste = ({ inPlace = false } = {}) => {
     if (!E.clip?.length || !E.canEdit()) return;
     E.finishText();
-    const clones = M.cloneElements(E.clip, 24, 24);
-    E.clip = clones.map((c) => U.clone(c));
+    let k = 0;
+    while (!inPlace && k < 50 && E.clip.some((el) => taken(el, 24 * k))) k++;
+    const clones = M.cloneElements(E.clip, 24 * k, 24 * k);
     E.page().elements.push(...clones);
     E.sel = clones.map((c) => c.id);
     E.changed();
@@ -1562,8 +1611,9 @@
     const ae = document.activeElement;
     const k = e.key?.toLowerCase() || '';
     const mod = e.ctrlKey || e.metaKey;
-    // selects and sliders keep their own keys (arrows, type-ahead); the other shortcuts still work there
-    const own = ae?.tagName === 'SELECT' ? !mod && !['delete', 'backspace', 'escape'].includes(k) : ae?.type === 'range' && k.startsWith('arrow');
+    // selects and sliders keep their own keys (arrows, type-ahead), a panel button its Enter and Space (adding
+    // an item from the keyboard); the other shortcuts still work there
+    const own = ae?.tagName === 'SELECT' ? !mod && !['delete', 'backspace', 'escape'].includes(k) : (ae?.type === 'range' && k.startsWith('arrow')) || (!mod && (k === 'enter' || k === ' ') && !!ae?.closest('.ed-panel button'));
     if (typingIn(ae) || own) return;
     if (document.querySelector('.modal-back') || A.Present?.active) return;
     const stop = () => e.preventDefault();
@@ -1584,6 +1634,12 @@
       // copying here too covers browsers that fire no copy event without a text selection (Safari)
       else if (k === 'c') E.copy();
       else if (k === 'x' && E.copy()) { const ids = E.sel.join(); cutSeen = false; setTimeout(() => !cutSeen && E.sel.join() === ids && E.deleteSel()); }
+      // elements copied here last are pasted right away (Shift: in place); otherwise the browser's paste event
+      // follows (E.onPaste) with what the system clipboard holds
+      else if (k === 'v') {
+        if (E.clip && E.clipFresh) { stop(); E.paste({ inPlace: e.shiftKey }); }
+        else inPlaceKey = e.shiftKey ? performance.now() : -1e9;
+      }
       else if (k === 'b' || k === 'i' || k === 'u') {
         const els = E.selEls().filter((x) => !x.locked && (x.type === 'text' || (x.type === 'shape' && x.text)));
         if (els.length) {
@@ -1627,10 +1683,10 @@
     if (k === 'r') return E.addShape('rect');
     if (k === 'c') return E.addShape('ellipse');
     if (k === 'l') return E.addLine();
-    if (k === 's' && E.isWB()) return E.add(M.newSticky());
+    if (k === 's' && E.isWB()) { stop(); return E.add(M.newSticky(), { edit: true }); }
     if (k === 'p' && e.altKey) return A.Present.start();
   };
-  let cutSeen = false;
+  let cutSeen = false, inPlaceKey = -1e9;
   E.onCopyEvent = (e) => {
     if (A.app.view !== 'editor' || !E.d) return;
     E.clipFresh = false;
@@ -1644,38 +1700,74 @@
     if (typingIn(document.activeElement)) return;
     const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
     const text = e.clipboardData?.getData('text/plain') || '';
+    const inPlace = performance.now() - inPlaceKey < 1000;
+    inPlaceKey = -1e9;
     e.preventDefault();
-    if (E.clip && (E.clipFresh || text === 'atelier-elements' || (!text && !files.length))) return E.paste();
+    if (E.clip && (E.clipFresh || text === 'atelier-elements' || (!text && !files.length))) return E.paste({ inPlace });
     if (files.length) {
-      for (const f of files) E.addImageAsset(await S.addAsset(f, { name: f.name || 'pasted image' }));
+      if (!E.canEdit()) return;
+      // several pictures are one step, fanned out so each shows
+      const d = E.d, els = [];
+      for (const f of files) els.push(imageEl(await S.addAsset(f, { name: f.name || 'pasted image' }), 0.6, els.length * 20));
+      if (E.d === d) E.add(els);
       return;
     }
     // the marker without elements to go with it (another window, or after a reload) pastes nothing
     if (text && text !== 'atelier-elements') {
-      if (E.styleClip && false) return;
       const el = M.newText({ text: cleanText(text).slice(0, 5000), w: E.d.width * 0.6, size: Math.max(12, Math.round(E.d.width / 30)) });
       el.h = R.textHeight(el);
       E.add(el);
     }
   };
+  // The page under a client point and the point on it in page px ({ i, x, y }), or null off the pages.
+  E.pointAt = (cx, cy) => {
+    for (const k in E.blocks) {
+      const r = E.blocks[k].frame.getBoundingClientRect();
+      if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) return { i: +k, ...E.toPage({ clientX: cx, clientY: cy }, +k) };
+    }
+    return null;
+  };
+  // An unlocked photo frame drawn topmost at a client point on page i (what a dropped photo fills).
+  E.frameAt = (cx, cy, i) => {
+    const svg = E.blocks[i]?.svg;
+    const t = svg && document.elementsFromPoint(cx, cy).map((n) => n.closest?.('[data-id]')).find((n) => n && svg.contains(n));
+    const el = t && E.byId(t.getAttribute('data-id'), E.d.pages[i]);
+    return el && el.type === 'shape' && el.frame && !el.locked ? el : null;
+  };
+  // While a photo (a file, or an upload from the panel) is dragged over the pages, the frame it would fill is outlined.
+  let dropHint = null;
+  E.clearDropHint = () => { dropHint?.remove(); dropHint = null; };
+  E.hintDrop = (cx, cy, photo) => {
+    const at = photo && E.d && E.pointAt(cx, cy), fr = at && !E.d.pages[at.i].locked && E.frameAt(cx, cy, at.i);
+    if (!fr) return E.clearDropHint();
+    const z = E.zoom, b = E.blocks[at.i];
+    if (dropHint?.parentNode !== b.overlay) { E.clearDropHint(); b.overlay.appendChild((dropHint = U.h('div.drop-hint'))); }
+    Object.assign(dropHint.style, { left: fr.x * z + 'px', top: fr.y * z + 'px', width: fr.w * z + 'px', height: fr.h * z + 'px', transform: `rotate(${fr.rot || 0}deg)` });
+  };
+  E.onDragOver = (e) => {
+    e.preventDefault();
+    const item = A.EU.dragItem;
+    E.hintDrop(e.clientX, e.clientY, item ? !!item.asset : [...(e.dataTransfer?.items || [])].some((x) => x.kind === 'file' && x.type.startsWith('image/')));
+  };
+  // Dropped files land where they are dropped: a photo on a frame fills it, the others go on the page under the
+  // pointer, all in one undo step.
   E.onDrop = async (e) => {
     if (!E.d) return;
     e.preventDefault();
-    const files = [...(e.dataTransfer?.files || [])];
+    E.clearDropHint();
+    if (A.EU.dragItem) return A.EU.dropItem(A.EU.dragItem, e);
+    E.finishText();
+    const d = E.d, files = [...(e.dataTransfer?.files || [])], cx = e.clientX, cy = e.clientY;
+    const at = E.pointAt(cx, cy), frame = at && E.frameAt(cx, cy, at.i), els = [];
+    let filled = null;
+    if (at && at.i !== E.pi) E.setPage(at.i, false);
+    if (files.some((f) => f.type.startsWith('image/')) && !E.canEdit()) return;
     for (const f of files) {
       if (f.type.startsWith('image/')) {
-        if (!E.canEdit()) return;
         const a = await S.addAsset(f, { name: f.name });
-        const el = E.addImageAsset(a, { center: true });
-        // drop onto a frame fills it
-        const t = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('[data-id]');
-        const target = t && E.byId(t.getAttribute('data-id'));
-        if (target && target.type === 'shape' && target.frame) {
-          target.asset = a.id;
-          E.page().elements = E.els().filter((x) => x !== el);
-          E.sel = [target.id];
-          E.changed();
-        }
+        if (E.d !== d) return;
+        if (frame && !filled && E.page().elements.includes(frame)) (filled = frame).asset = a.id;
+        else els.push(imageEl(a, 0.6, els.length * 20));
       } else if (f.type.startsWith('audio/')) {
         const a = await S.addAsset(f, { name: f.name });
         E.d.audio = a.id;
@@ -1683,7 +1775,14 @@
         U.toast('Audio added to the design');
       } else await A.app.importFile(f, { toEditor: true });
     }
-    const tplData = e.dataTransfer?.getData('application/x-atelier');
-    if (tplData) A.EU.dropItem(JSON.parse(tplData), e);
+    if (E.d !== d) return;
+    if (els.length) {
+      E.dropAt = at && at.i === E.pi ? at : null;
+      E.add(els);
+    } else if (filled) {
+      E.sel = [filled.id];
+      E.changed();
+      A.EU.onSelectionChange?.();
+    }
   };
 })(window.A);

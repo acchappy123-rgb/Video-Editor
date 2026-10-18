@@ -53,11 +53,15 @@
     );
     EU.rail = h('nav.ed-rail', RAIL.map(([id, label, icon]) => h('button.rail-btn', { 'data-p': id, onclick: () => EU.togglePanel(id) }, U.ic(icon, 22), h('span', label))));
     EU.panelEl = h('aside.ed-panel');
+    // an item picked up by touch is dragged, not the panel scrolled
+    EU.panelEl.addEventListener('touchmove', (e) => held?.dragging() && e.cancelable && e.preventDefault(), { passive: false });
     EU.panelCollapse = h('button.panel-collapse', { title: 'Hide panel', onclick: () => EU.closePanel() }, U.ic('back', 16));
     EU.toolbar = h('div.ed-toolbar');
     E.pagesEl = h('div.ed-pages' + (E.layout() === 'strip' ? '.strip' : ''));
     E.scrollEl = h('div.ed-scroll', E.pagesEl);
-    E.scrollEl.addEventListener('dragover', (e) => e.preventDefault());
+    E.scrollEl.addEventListener('scroll', followScroll, { passive: true });
+    E.scrollEl.addEventListener('dragover', E.onDragOver);
+    E.scrollEl.addEventListener('dragleave', (e) => !E.scrollEl.contains(e.relatedTarget) && E.clearDropHint());
     E.scrollEl.addEventListener('drop', E.onDrop);
     E.scrollEl.addEventListener('pointerdown', (e) => {
       if (e.target === E.scrollEl || e.target === E.pagesEl) E.deselect();
@@ -470,6 +474,7 @@
     if (!els.length) {
       return U.menu(anchor, [
         { label: 'Paste', icon: 'copy', shortcut: 'Ctrl+V', onClick: () => E.paste(), disabled: !E.clip },
+        { label: 'Paste in place', icon: 'copy', shortcut: 'Ctrl+Shift+V', onClick: () => E.paste({ inPlace: true }), disabled: !E.clip },
         { label: 'Select all', icon: 'grid', shortcut: 'Ctrl+A', onClick: () => E.selectAll() },
         { divider: true },
         { label: 'Add page', icon: 'addpage', onClick: () => E.addPage(E.pi + 1) },
@@ -482,6 +487,7 @@
     U.menu(anchor, [
       { label: 'Copy', icon: 'copy', shortcut: 'Ctrl+C', onClick: () => E.copy() },
       { label: 'Paste', icon: 'copy', shortcut: 'Ctrl+V', onClick: () => E.paste(), disabled: !E.clip },
+      { label: 'Paste in place', icon: 'copy', shortcut: 'Ctrl+Shift+V', onClick: () => E.paste({ inPlace: true }), disabled: !E.clip },
       { label: 'Duplicate', icon: 'copy', shortcut: 'Ctrl+D', onClick: () => E.duplicate() },
       { label: 'Delete', icon: 'trash', shortcut: 'Del', onClick: () => E.deleteSel(), danger: true },
       { divider: true },
@@ -590,7 +596,7 @@
     const cmds = [
       ['Add heading', () => E.addText('heading')], ['Add subheading', () => E.addText('subheading')], ['Add body text', () => E.addText('body')],
       ['Rectangle', () => E.addShape('rect')], ['Circle', () => E.addShape('ellipse')], ['Triangle', () => E.addShape('triangle')], ['Star', () => E.addShape('star')],
-      ['Line', () => E.addLine()], ['Arrow', () => E.addLine({ end: 'arrow' })], ['Sticky note', () => E.add(M.newSticky())],
+      ['Line', () => E.addLine()], ['Arrow', () => E.addLine({ end: 'arrow' })], ['Sticky note', () => E.add(M.newSticky(), { edit: true })],
       ['Bar chart', () => E.add(M.newChart('bar'))], ['Pie chart', () => E.add(M.newChart('pie'))], ['Line chart', () => E.add(M.newChart('line'))], ['Table', () => E.add(M.newTable())],
       ['Add page', () => E.addPage(E.pi + 1)], ['Duplicate page', () => E.duplicatePage(E.pi)],
       ['Draw', () => EU.openPanel('draw')], ['Upload files', () => EU.openPanel('uploads')], ['Templates', () => EU.openPanel('design')], ['Brand kit', () => EU.openPanel('brand')], ['AI tools', () => EU.openPanel('ai')], ['Apps', () => EU.openPanel('apps')],
@@ -606,7 +612,8 @@
       cmds.filter(([n]) => n.toLowerCase().includes(q)).slice(0, 12).forEach(([n, fn], i) => list.appendChild(h('button.qm-item' + (i === 0 ? '.on' : ''), { onclick: () => { m.close(); fn(); } }, n)));
     };
     inp.addEventListener('input', render);
-    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') list.querySelector('.qm-item')?.click(); });
+    // the Enter must not reach a text box the action opens for typing
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); list.querySelector('.qm-item')?.click(); } });
     render();
     m = U.modal({ title: 'Quick actions', body: h('div', inp, list) });
   };
@@ -918,8 +925,43 @@
     if (EU.zoomRange) EU.zoomRange.value = Math.round(E.zoom * 100);
   };
   EU.refreshPageInfo = () => {
-    if (EU.pageInfo && E.d) EU.pageInfo.textContent = `Page ${E.pi + 1} / ${E.d.pages.length}`;
+    if (!E.d) return;
+    if (EU.pageInfo) EU.pageInfo.textContent = `Page ${E.pi + 1} / ${E.d.pages.length}`;
+    if (E.pi !== shownPi && !following) pin = { t: performance.now(), burst: false };
+    shownPi = E.pi;
   };
+  // The page mostly in view becomes the current one as the pages are scrolled, so adds and pastes land on what is
+  // being looked at; a page with a selection stays current while any of it shows. A page picked elsewhere (a click,
+  // the page grid, Add page, undo) is not taken away while the view scrolls over to it.
+  let pin = null, shownPi = -1, following = false, scrollRaf = 0, settleT = 0;
+  function followScroll() {
+    // the pin holds for a scroll that starts right after the page was picked, until it comes to rest
+    if (pin && !pin.burst) pin = performance.now() - pin.t < 400 ? { ...pin, burst: true } : null;
+    clearTimeout(settleT);
+    settleT = setTimeout(() => followPage(true), 150);
+    if (!scrollRaf) scrollRaf = requestAnimationFrame(() => { scrollRaf = 0; followPage(false); });
+  }
+  function followPage(rest) {
+    if (!E.d || E.layout() === 'strip' || !E.scrollEl?.isConnected) return;
+    const pinned = !!pin;
+    if (pinned && !rest) return;
+    if (rest) pin = null;
+    const ae = document.activeElement;
+    if (E.dragging || E.editingId || ae?.matches('input:not([type=range]):not([type=checkbox]), textarea, select')) return;
+    const sr = E.scrollEl.getBoundingClientRect();
+    const seen = (k) => {
+      const r = E.blocks[k]?.frame.getBoundingClientRect();
+      return r ? Math.max(0, Math.min(r.right, sr.right) - Math.max(r.left, sr.left)) * Math.max(0, Math.min(r.bottom, sr.bottom) - Math.max(r.top, sr.top)) : 0;
+    };
+    let best = E.pi, most = seen(E.pi);
+    const cur = most;
+    for (const k in E.blocks) if (seen(+k) > most) { most = seen(+k); best = +k; }
+    // a picked page only gives way once it is out of view
+    if (best === E.pi || !(cur <= 0 || (!pinned && !E.sel.length && most >= 2 * cur))) return;
+    following = true;
+    E.setPage(best, false);
+    following = false;
+  }
   function notesEditor() {
     const p = E.page();
     const ta = h('textarea.input.notes', { placeholder: 'Speaker notes for this page (visible in presenter view)' });
@@ -949,7 +991,94 @@
     m = U.modal({ title: 'Pages (drag to reorder)', body: grid, wide: true });
   }
 
-  EU.dropItem = (item) => {
-    if (item.kind === 'shape') E.addShape(item.shape);
+  // ---------- dragging items out of the panels ----------
+  // A panel item { add, asset } dropped on a page is added there: `add` runs with E.dropAt set to the drop point,
+  // and a photo (`asset`) dropped on a frame fills it. The mouse drags natively; a finger holds the item, then drags.
+  EU.dragItem = null;
+  EU.draggable = (btn, item) => {
+    btn.draggable = true;
+    btn.addEventListener('dragstart', (e) => {
+      // where touch drags natively, that takes over from the hold-and-drag
+      held?.end();
+      EU.dragItem = item;
+      e.dataTransfer.setData('application/x-atelier', 'item');
+      e.dataTransfer.effectAllowed = 'copy';
+    });
+    btn.addEventListener('dragend', () => { EU.dragItem = null; E.clearDropHint(); });
+    btn.addEventListener('pointerdown', (e) => e.pointerType === 'touch' && e.isPrimary && holdToDrag(e, btn, item));
+    // the finger lifted at the end of a drag is no tap on the item
+    btn.addEventListener('click', (e) => { if (performance.now() - droppedAt < 600) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+    return btn;
   };
+  EU.dropItem = (item, e) => {
+    EU.dragItem = null;
+    if (!E.d) return;
+    E.finishText();
+    // the item dragged from lets go of the focus, so Space can't use it again (a frame filled, a background set)
+    document.activeElement?.closest?.('.ed-panel button')?.blur();
+    // the page under the pointer takes the item (dropped beside the pages: the current one, in the middle of the view)
+    const at = E.pointAt(e.clientX, e.clientY);
+    if (at && at.i !== E.pi) E.setPage(at.i, false);
+    const frame = at && item.asset && E.frameAt(e.clientX, e.clientY, at.i);
+    if (frame) {
+      if (!E.canEdit()) return;
+      frame.asset = item.asset.id;
+      E.sel = [frame.id];
+      E.changed();
+      return EU.onSelectionChange();
+    }
+    E.dropAt = at;
+    const r = item.add();
+    // an item that loads first (a brand logo) still lands at the drop
+    if (r?.then) r.finally(() => (E.dropAt = null));
+    else E.dropAt = null;
+  };
+  let held = null, droppedAt = -1e9;
+  // Touch: holding an item still for a moment picks it up; moving sooner scrolls the panel as usual.
+  function holdToDrag(e0, btn, item) {
+    held?.end();
+    const id = e0.pointerId, x0 = e0.clientX, y0 = e0.clientY;
+    let ghost = null, moved = false;
+    const place = (x, y) => (ghost.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`);
+    const move = (ev) => {
+      if (ev.pointerId !== id) return;
+      if (!ghost) return Math.hypot(ev.clientX - x0, ev.clientY - y0) > 10 && end();
+      if (!moved) U.closePop();
+      moved = true;
+      place(ev.clientX, ev.clientY);
+      if (item.asset) E.hintDrop(ev.clientX, ev.clientY, true);
+    };
+    const up = (ev) => {
+      if (ev.pointerId !== id) return;
+      const drop = ghost && moved && ev.type === 'pointerup';
+      end();
+      if (!drop) return;
+      droppedAt = performance.now();
+      // over the canvas, not the panel sheet that covers part of it on a phone
+      if (E.scrollEl?.contains(document.elementFromPoint(ev.clientX, ev.clientY))) EU.dropItem(item, ev);
+    };
+    // no browser menu for the long press; an item's own menu (Delete upload) still opens, and closes once it is dragged
+    const menu = (ev) => ev.preventDefault();
+    const end = () => {
+      clearTimeout(timer);
+      ghost?.remove();
+      if (ghost) E.clearDropHint();
+      held = null;
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', up);
+      removeEventListener('pointercancel', up);
+      removeEventListener('contextmenu', menu, true);
+    };
+    const timer = setTimeout(() => {
+      ghost = h('div.drag-ghost', btn.cloneNode(true));
+      document.body.appendChild(ghost);
+      place(x0, y0);
+      navigator.vibrate?.(10);
+    }, 400);
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+    addEventListener('pointercancel', up);
+    addEventListener('contextmenu', menu, true);
+    held = { end, dragging: () => !!ghost };
+  }
 })(window.A);
