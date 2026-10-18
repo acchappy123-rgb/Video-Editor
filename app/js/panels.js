@@ -16,7 +16,10 @@
   // page edits made from a panel respect the page lock
   const setBg = (patch) => {
     if (!E.canEdit()) return false;
-    E.page().bg = { ...(E.page().bg || {}), ...patch };
+    const bg = { ...(E.page().bg || {}), ...patch };
+    // a new photo starts centred
+    if (patch.asset) delete bg.fit;
+    E.page().bg = bg;
     E.changed();
     return true;
   };
@@ -272,7 +275,9 @@
         await S.ensureAssetURLs(imgs.map((a) => a.id));
         if (!imgs.length) list.append(h('p.muted', 'No images yet.'));
         list.append(h('div.img-grid', imgs.map((a) => {
-          const btn = h('button.img-item', { title: a.name, onclick: () => useImage(a, mode) }, h('img', { src: S.assetURL(a.id), alt: a.name, loading: 'lazy' }));
+          const btn = h('button.img-item', { title: a.name, draggable: 'true', onclick: () => useImage(a, mode) }, h('img', { src: S.assetURL(a.id), alt: a.name, loading: 'lazy', draggable: 'false' }));
+          // dragged onto the page it is added there, onto a frame it fills the frame
+          btn.addEventListener('dragstart', (e) => e.dataTransfer.setData('application/x-atelier', JSON.stringify({ kind: 'image', asset: a.id })));
           btn.addEventListener('contextmenu', (e) => { e.preventDefault(); U.menu({ x: e.clientX, y: e.clientY }, [{ label: 'Delete upload', icon: 'trash', danger: true, onClick: async () => { a.hidden = true; await S.put('assets', a); EU.renderPanel(); } }]); });
           return btn;
         })));
@@ -300,12 +305,12 @@
   }
   function useImage(a, mode) {
     const el = sel1();
-    if (mode === 'background') return setBg({ asset: a.id }) && EU.openPanel('uploads');
+    if (mode === 'background') return setBg({ asset: a.id, nw: a.w, nh: a.h }) && EU.openPanel('uploads');
     // replacing a photo or filling a frame edits that element, so its lock and the page lock apply
     const swap = el && ((mode === 'replace' && el.type === 'image') || (el.type === 'shape' && (el.frame || mode === 'frame')));
     if (swap && !E.editEls().includes(el)) return;
     if (mode === 'replace' && el?.type === 'image') { el.asset = a.id; el.nw = a.w; el.nh = a.h; el.crop = { x: 0, y: 0, w: 1, h: 1 }; el.h = el.w * (a.h / a.w); E.changed(); return EU.openPanel('uploads'); }
-    if (el && el.type === 'shape' && (el.frame || mode === 'frame')) { el.asset = a.id; el.frame = true; E.changed(); return; }
+    if (el && el.type === 'shape' && (el.frame || mode === 'frame')) { E.fillFrame(el, a); E.changed(); return; }
     E.addImageAsset(a);
   }
 
@@ -384,7 +389,7 @@
       upd();
       const make = async () => S.addAsset(await A.I.patternBlob(kind.value, fg.value, bg.value, +sc.value * Math.max(1, W / 1080), Math.round(W), Math.round(H)), { name: 'Pattern' });
       return h('div', img, h('label.field', h('span', 'Pattern'), kind), h('div.row', h('span', 'Colours'), fg, bg), h('label.field', h('span', 'Scale'), sc),
-        h('button.btn.primary.full', { onclick: async () => { if (!E.canEdit()) return; const a = await make(); await S.ensureAssetURLs([a.id]); setBg({ asset: a.id }); } }, 'Set as background'),
+        h('button.btn.primary.full', { onclick: async () => { if (!E.canEdit()) return; const a = await make(); await S.ensureAssetURLs([a.id]); setBg({ asset: a.id, nw: a.w, nh: a.h }); } }, 'Set as background'),
         h('button.btn.full', { onclick: async () => E.addImageAsset(await make()) } , 'Add as image'));
     }
     if (id === 'palette') {
@@ -830,9 +835,10 @@
         await S.ensureAssetURLs([a.id]);
         const ratio = a.h / a.w, oldRatio = (el.nh || a.h) / (el.nw || a.w);
         el.asset = a.id;
-        if (el.type === 'image') {
-          el.nw = a.w; el.nh = a.h;
-          if (reframe || Math.abs(ratio - oldRatio) > 0.01) { el.crop = { x: 0, y: 0, w: 1, h: 1 }; el.h = el.w * ratio; }
+        el.nw = a.w; el.nh = a.h;
+        if (reframe || Math.abs(ratio - oldRatio) > 0.01) {
+          if (el.type === 'image') { el.crop = { x: 0, y: 0, w: 1, h: 1 }; el.h = el.w * ratio; }
+          else delete el.fit;
         }
         E.changed();
         EU.renderPanel();
@@ -852,8 +858,10 @@
   };
 
   // ---------- Crop ----------
+  const rotateFlip = () => section('Rotate & flip', h('div.row', h('button.btn', { onclick: () => EU.apply((x) => (x.rot = ((x.rot || 0) + 90) % 360)) }, 'Rotate 90°'), h('button.btn', { onclick: () => E.flip('h') }, 'Flip H'), h('button.btn', { onclick: () => E.flip('v') }, 'Flip V')));
   P.crop = () => {
     const el = sel1();
+    if (E.isPhotoFrame(el)) return frameCrop(el);
     if (!el || el.type !== 'image') return { title: 'Crop', body: h('p.muted', 'Select a photo to crop it.') };
     const c = el.crop || { x: 0, y: 0, w: 1, h: 1 };
     const setRatio = (r) => {
@@ -871,7 +879,7 @@
     const ratios = [['Original', null], ['1:1', 1], ['4:3', 4 / 3], ['3:4', 3 / 4], ['16:9', 16 / 9], ['9:16', 9 / 16], ['3:2', 3 / 2]];
     const zoom = Math.round(100 / Math.max(c.w, c.h));
     const body = h('div',
-      h('p.muted.small', 'Tip: drag the side handles on the photo to crop freely.'),
+      h('p.muted.small', 'Tip: double-click the photo to crop it on the page, or drag its side handles.'),
       section('Aspect ratio', h('div.chip-row', ratios.map(([l, r]) => h('button.chip', { onclick: () => setRatio(r) }, l)))),
       section('Zoom & position',
         EU.slider('Zoom', zoom, 100, 400, 1, (v, f) => EU.apply((x) => {
@@ -885,11 +893,37 @@
         EU.slider('Horizontal', Math.round(c.w >= 1 ? 50 : (c.x / (1 - c.w)) * 100), 0, 100, 1, (v, f) => EU.apply((x) => x.type === 'image' && (x.crop = { ...x.crop, x: (1 - x.crop.w) * (v / 100) }), f)),
         EU.slider('Vertical', Math.round(c.h >= 1 ? 50 : (c.y / (1 - c.h)) * 100), 0, 100, 1, (v, f) => EU.apply((x) => x.type === 'image' && (x.crop = { ...x.crop, y: (1 - x.crop.h) * (v / 100) }), f))
       ),
-      section('Rotate & flip', h('div.row', h('button.btn', { onclick: () => EU.apply((x) => (x.rot = ((x.rot || 0) + 90) % 360)) }, 'Rotate 90°'), h('button.btn', { onclick: () => E.flip('h') }, 'Flip H'), h('button.btn', { onclick: () => E.flip('v') }, 'Flip V'))),
+      rotateFlip(),
       h('button.btn.full', { onclick: () => { setRatio(null); } }, 'Reset crop')
     );
     return { title: 'Crop', body };
   };
+  // A photo frame: zoom the photo and move it inside the frame (the fit its on-page crop edits too).
+  function frameCrop(el) {
+    if (!(el.nw > 0 && el.nh > 0)) {
+      E.naturalSize(el).then((ok) => ok && EU.panel === 'crop' && EU.renderPanel());
+      return { title: 'Crop', body: h('p.muted', 'Loading the photo…') };
+    }
+    const b = R.fitBox(el.w, el.h, el.nw, el.nh, el.fit);
+    // 0–100 across the room the photo has to move in; 50 when it has none
+    const pos = (len, size, off) => (size - len < 0.5 ? 50 : Math.round((-off / (size - len)) * 100));
+    const move = (axis, v) => (x) => {
+      if (!E.isPhotoFrame(x) || !(x.nw > 0)) return;
+      const g = R.fitBox(x.w, x.h, x.nw, x.nh, x.fit), len = axis === 'x' ? x.w : x.h, size = axis === 'x' ? g.w : g.h;
+      x.fit = { ...x.fit, ['c' + axis]: U.round((len / 2 + ((size - len) * v) / 100) / size, 4) };
+    };
+    const body = h('div',
+      h('p.muted.small', 'Tip: double-click the frame to drag the photo into place.'),
+      section('Zoom & position',
+        EU.slider('Zoom', Math.round((el.fit?.s || 1) * 100), 100, 400, 1, (v, f) => EU.apply((x) => E.isPhotoFrame(x) && (x.fit = { ...x.fit, s: v / 100 }), f), (v) => v + '%'),
+        EU.slider('Horizontal', pos(el.w, b.w, b.x), 0, 100, 1, (v, f) => EU.apply(move('x', v), f)),
+        EU.slider('Vertical', pos(el.h, b.h, b.y), 0, 100, 1, (v, f) => EU.apply(move('y', v), f))
+      ),
+      rotateFlip(),
+      h('button.btn.full', { onclick: () => { EU.apply((x) => delete x.fit); EU.renderPanel(); } }, 'Reset position')
+    );
+    return { title: 'Crop', body };
+  }
 
   // ---------- Chart data ----------
   P.chart = () => {
