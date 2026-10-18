@@ -429,7 +429,8 @@
       ['T', 'Add text box'], ['R', 'Add rectangle'], ['C', 'Add circle'], ['L', 'Add line'], ['S', 'Sticky note (whiteboards)'], ['/', 'Quick actions menu'],
       ['Ctrl/⌘ + D', 'Duplicate'], ['Ctrl/⌘ + G', 'Group'], ['Shift + Ctrl/⌘ + G', 'Ungroup'], ['Ctrl/⌘ + C / X / V', 'Copy / cut / paste'], ['Ctrl/⌘ + A', 'Select all'],
       ['Ctrl/⌘ + Z / Y', 'Undo / redo'], ['Ctrl/⌘ + B / I / U', 'Bold / italic / underline'], ['Alt/Option + drag', 'Copy while dragging'], ['Shift + drag corner', 'Keep / free proportions'], ['Shift + rotate', 'Snap rotation to 15°'],
-      ['Arrow keys', 'Nudge 1px'], ['Shift + arrows', 'Nudge 10px'], ['Ctrl/⌘ + drag', 'Move without snapping'], ['Enter', 'Edit selected text'], ['Delete', 'Delete selection'], ['Esc', 'Deselect / exit tool'],
+      ['Arrow keys', 'Nudge 1px'], ['Shift + arrows', 'Nudge 10px'], ['Ctrl/⌘ + drag', 'Move without snapping'], ['Enter', 'Edit selected text / crop selected photo'], ['Delete', 'Delete selection'], ['Esc', 'Deselect / exit tool'],
+      ['Cropping: drag, arrows, + / −', 'Move / zoom the photo'], ['Cropping: Enter / Esc', 'Done / cancel'],
       ['Ctrl/⌘ + + / − / 0', 'Zoom in / out / fit'], ['Ctrl/⌘ + Enter', 'Present (presentations)'], ['In present mode: ← → Space', 'Change page'], ['P / F', 'Presenter view / full screen'],
     ];
     U.modal({ title: 'Keyboard shortcuts', wide: true, body: h('div.shortcuts', rows.map(([k, d]) => h('div.sc-row', h('kbd', k), h('span', d)))) });

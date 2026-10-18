@@ -28,7 +28,7 @@
     E.pi = 0;
     E.sel = [];
     E.tool = null;
-    E.editingId = E.editEl = E.textArea = E.textAreaStyle = E.enteredGroup = null;
+    E.editingId = E.editEl = E.textArea = E.textAreaStyle = E.enteredGroup = E.cropping = null;
     E.hist = [snap()];
     E.hi = 0;
     E.dirty = E.dirtySinceVersion = false;
@@ -418,6 +418,8 @@
     commitField();
     E.flushCommit();
     E.sel = add ? [...new Set([...E.sel, ...ids])] : ids;
+    // selecting anything else ends a crop
+    if (E.cropping && E.sel.join() !== (E.cropping.id || '')) E.endCrop();
     if (E.editingId && !E.sel.includes(E.editingId)) E.finishText();
     E.drawOverlay();
     A.EU.refreshToolbar();
@@ -439,6 +441,7 @@
     if (!b) return;
     E.hoverBox = U.h('div.hover-box');
     b.overlay.appendChild(E.hoverBox);
+    if (E.cropping && drawCrop(b)) return;
     const els = E.selEls();
     if (!els.length || E.editingId === null && false) return;
     if (!els.length) return;
@@ -496,12 +499,10 @@
   };
   function miniMenu(b, box, locked) {
     if (E.editingId || E.dragging) return;
-    const z = E.zoom;
     const els = E.selEls();
     const btn = (icon, title, fn, txt) => U.h('button.mini-btn', { title, onpointerdown: (e) => e.stopPropagation(), onclick: fn }, txt ? U.h('span.mini-txt', txt) : U.ic(icon, 16));
     const m = U.h(
       'div.mini-menu',
-      { style: { left: (box.x + box.w / 2) * z + 'px', top: Math.max(-44, box.y * z - 50) + 'px' } },
       els.length === 1 && els[0].sticky ? btn('vote', 'Vote', () => { els[0].votes = (els[0].votes || 0) + 1; E.changed(); }) : null,
       els.length > 1 && !els.every((e) => e.groupId && e.groupId === els[0].groupId) ? btn('group', 'Group (Ctrl+G)', () => E.group(), 'Group') : null,
       els.length > 1 && els.every((e) => e.groupId && e.groupId === els[0].groupId) ? btn('group', 'Ungroup (Ctrl+Shift+G)', () => E.ungroup(), 'Ungroup') : null,
@@ -511,8 +512,14 @@
       btn('trash', 'Delete', () => E.deleteSel()),
       btn('more', 'More', (e) => E.onContext(e, E.pi, true))
     );
+    floatMenu(b, m, box);
+  }
+  // A floating menu centred above `box`, kept inside the visible canvas; with no room above (page head, top of the
+  // view) it goes below the handles.
+  function floatMenu(b, m, box) {
+    const z = E.zoom;
+    Object.assign(m.style, { left: (box.x + box.w / 2) * z + 'px', top: Math.max(-44, box.y * z - 50) + 'px' });
     b.overlay.appendChild(m);
-    // keep it inside the visible canvas; with no room above (page head, top of the view) put it below the handles
     const wrap = E.scrollEl, sr = wrap.getBoundingClientRect(), fr = b.frame.getBoundingClientRect(), mr = m.getBoundingClientRect();
     const minTop = Math.max(fr.top, sr.top) + 4;
     if (mr.top < minTop) {
@@ -588,15 +595,16 @@
     if (e.button === 2) {
       const id = hitId(e, i);
       if (i !== E.pi) E.setPage(i, false);
+      E.endCrop();
       if (id && !E.sel.includes(id)) E.select(groupMembers(E.byId(id)));
       return;
     }
     if (e.button !== 0) return;
-    if (e.target.closest('.handle,.rot-handle,.move-handle,.mini-menu,.comment-pin,.ruler,.user-guide')) return;
-    // hit-test first: finishing a text edit re-renders the page and detaches e.target
+    if (e.target.closest('.handle,.rot-handle,.move-handle,.mini-menu,.comment-pin,.ruler,.user-guide,.crop-layer')) return;
+    // hit-test first: finishing a text edit or a crop re-renders the page and detaches e.target
     const id = hitId(e, i);
     if (i !== E.pi) E.setPage(i, false);
-    if (E.editingId) E.finishText();
+    if (E.editingId || E.cropping) E.finishText();
     if (E.tool === 'draw') return startDraw(e, i);
     if (E.tool === 'comment') {
       const p = E.toPage(e, i);
@@ -635,17 +643,26 @@
     startMove(e, i);
   };
   E.onDblClick = (e, i) => {
+    if (e.target.closest('.crop-bar')) return;
+    // a double-click on the photo being cropped finishes the crop
+    if (E.cropping) return e.target.closest('.crop-layer') && E.endCrop();
     const id = hitId(e, i);
     const el = id && E.byId(id);
-    if (!el || el.locked || E.page().locked) return;
+    if (E.page().locked) return;
+    // on the page's background photo it adjusts that photo (not while drawing)
+    if (!el) return !id && !E.tool && E.page().bg?.asset && E.blocks[i]?.svg.contains(e.target) && E.startCrop('bg');
+    if (el.locked) return;
     if (el.groupId && E.enteredGroup !== el.groupId) {
       E.enteredGroup = el.groupId;
       E.select([el.id]);
     }
-    if (el.type === 'text' || el.type === 'shape') E.editText(el);
+    // a photo or a filled frame is cropped; an empty frame asks for a photo
+    if (el.type === 'image' || E.isPhotoFrame(el)) {
+      if (!E.tool) E.startCrop(el);
+    } else if (el.type === 'shape' && el.frame) A.EU.openPanel('uploads', 'frame');
+    else if (el.type === 'text' || el.type === 'shape') E.editText(el);
     else if (el.type === 'table') A.EU.openPanel('table');
     else if (el.type === 'chart') A.EU.openPanel('chart');
-    else if (el.type === 'image') A.EU.openPanel('imageEdit');
   };
   E.onContext = (e, i, fromButton) => {
     e.preventDefault();
@@ -1159,8 +1176,9 @@
   // a Word-style line break (\v) or page break (\f) starts a new line; other control characters are dropped
   const cleanText = (t) => t.replace(/\r\n?|[\v\f\u2028\u2029]/g, '\n').replace(/[\0-\x08\x0e-\x1f]/g, '');
   E.editText = (el) => {
-    if (el.locked || !E.canEdit()) return;
-    if (E.editingId) E.finishText();
+    // a photo frame is never a text box
+    if (el.locked || el.frame || el.asset || !E.canEdit()) return;
+    E.finishText();
     if (el.type === 'shape' && !el.text) {
       // contrast with the fill, or with the page when the shape has no solid fill
       const base = [el.asset ? '#888888' : el.fill, E.page().bg?.color].map((c) => String(c).replace(/^grad:/, '').split(':')[0]).find(U.isColor) || '#ffffff';
@@ -1262,6 +1280,7 @@
   }
   E.restyleText = () => E.textAreaStyle && E.textAreaStyle();
   E.finishText = () => {
+    E.endCrop();
     if (!E.editingId) return;
     commitField('.ed-toolbar, .ed-panel, .popover');
     const el = E.editEl, page = E.d.pages.find((p) => p.elements.includes(el));
@@ -1275,6 +1294,291 @@
     if (page && page !== E.page()) E.renderPage(E.d.pages.indexOf(page));
     E.changed();
   };
+
+  // ---------- crop mode (photos, photo frames and the page's background photo) ----------
+  // E.cropping = { kind: 'image' | 'frame' | 'bg', id, pi, keys, orig, ratio }. The photo changes live and the whole
+  // session is one undo step when it ends (Done, Enter, a click elsewhere); Esc puts it back as it was.
+  const CROP_KEYS = { image: ['x', 'y', 'w', 'h', 'crop'], frame: ['fit'], bg: ['fit'] };
+  const CROP_RATIOS = [['Free', null], ['1:1', 1], ['4:3', 4 / 3], ['3:4', 3 / 4], ['16:9', 16 / 9], ['9:16', 9 / 16]];
+  E.isPhotoFrame = (el) => el?.type === 'shape' && !!el.asset;
+  const hasSize = (t) => t?.nw > 0 && t?.nh > 0;
+  const cropTarget = (c = E.cropping) => {
+    const page = c && E.d?.pages[c.pi];
+    if (!page) return null;
+    return c.kind === 'bg' ? page.bg : page.elements.find((x) => x.id === c.id);
+  };
+  // Older frames and backgrounds lack the photo's natural size: it is looked up (an invisible fix, not an undo step).
+  E.naturalSize = async (t) => {
+    if (hasSize(t)) return true;
+    const d = E.d, id = t?.asset, a = id && (await S.get('assets', id));
+    if (!a?.w || E.d !== d || t.asset !== id) return false;
+    const same = snap() === E.hist[E.hi];
+    Object.assign(t, { nw: a.w, nh: a.h });
+    if (same) E.hist[E.hi] = snap();
+    return true;
+  };
+  // a new photo in a frame starts centred
+  E.fillFrame = (el, a) => {
+    Object.assign(el, { asset: a.id, frame: true, nw: a.w, nh: a.h });
+    delete el.fit;
+  };
+  // el: a photo or filled frame on this page, or 'bg' for the page's background photo
+  E.startCrop = (el) => {
+    const bg = el === 'bg', t = bg ? E.page()?.bg : el;
+    if (!t?.asset || !(bg || el.type === 'image' || E.isPhotoFrame(el)) || (!bg && !E.els().includes(el)) || !E.canEdit()) return false;
+    if (!bg && el.locked) {
+      U.toast('Unlock the element to edit it');
+      return false;
+    }
+    const kind = bg ? 'bg' : el.type === 'image' ? 'image' : 'frame';
+    if (kind !== 'image' && !hasSize(t)) {
+      const sel = E.sel.join();
+      E.naturalSize(t).then((ok) => ok && E.sel.join() === sel && E.startCrop(el));
+      return false;
+    }
+    E.finishText();
+    E.flushCommit();
+    if (!bg && el.groupId) E.enteredGroup = el.groupId;
+    E.sel = bg ? [] : [el.id];
+    A.EU.onSelectionChange?.();
+    // with the side panel showing, the Crop panel's sliders come along (a phone keeps its canvas)
+    if (!bg && A.EU.panelOpen && innerWidth > 760 && A.EU.panel !== 'crop') A.EU.openPanel('crop');
+    const keys = CROP_KEYS[kind];
+    E.cropping = { kind, id: bg ? null : el.id, pi: E.pi, keys, orig: U.clone(Object.fromEntries(keys.map((k) => [k, t[k]]))), ratio: null };
+    E.drawOverlay();
+    A.EU.refreshToolbar();
+    return true;
+  };
+  E.endCrop = (keep = true) => {
+    const c = E.cropping;
+    if (!c) return;
+    E.cropping = null;
+    const t = cropTarget(c);
+    if (t && !keep) {
+      for (const k of c.keys) {
+        if (k in c.orig) t[k] = U.clone(c.orig[k]);
+        else delete t[k];
+      }
+    }
+    // one undo step for the session, none when nothing changed
+    if (snap() !== E.hist[E.hi]) return E.changed();
+    E.renderPage(c.pi);
+    E.drawOverlay();
+    A.EU.refreshToolbar();
+    A.EU.refreshPanel();
+  };
+  // The session's box (page units, with the element's rotation and flips) and the whole photo in it (`img`, in the
+  // box's own unflipped units); a cropped photo's window is the box itself.
+  function cropGeom(c = E.cropping) {
+    const t = cropTarget(c);
+    if (c.kind === 'bg') return { t, box: { x: 0, y: 0, w: E.d.width, h: E.d.height, rot: 0, fx: 1, fy: 1 }, img: R.fitBox(E.d.width, E.d.height, t.nw, t.nh, t.fit) };
+    const box = { x: t.x, y: t.y, w: t.w, h: t.h, rot: t.rot || 0, fx: t.flipX ? -1 : 1, fy: t.flipY ? -1 : 1 };
+    if (c.kind === 'frame') return { t, box, img: R.fitBox(t.w, t.h, t.nw, t.nh, t.fit) };
+    const cr = t.crop || { x: 0, y: 0, w: 1, h: 1 };
+    return { t, box, img: { x: (-cr.x * t.w) / cr.w, y: (-cr.y * t.h) / cr.h, w: t.w / cr.w, h: t.h / cr.h } };
+  }
+  // a page-unit vector in a box's own units, and back
+  const toBox = (box, dx, dy) => {
+    const a = (-box.rot * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+    return { x: (dx * c - dy * s) * box.fx, y: (dx * s + dy * c) * box.fy };
+  };
+  const fromBox = (box, lx, ly) => {
+    const a = (box.rot * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a), x = lx * box.fx, y = ly * box.fy;
+    return { x: x * c - y * s, y: x * s + y * c };
+  };
+  // a frame's (or the background's) photo box g becomes its fit: covering the w×h box, zoomed at most 10×
+  const setFit = (t, w, h, g) => {
+    const s = U.clamp(g.w / (Math.max(w / t.nw, h / t.nh) * t.nw), 1, 10);
+    const b = R.fitBox(w, h, t.nw, t.nh, { s, cx: (w / 2 - g.x) / g.w, cy: (h / 2 - g.y) / g.h });
+    t.fit = { s: U.round(s, 4), cx: U.round((w / 2 - b.x) / b.w, 4), cy: U.round((h / 2 - b.y) / b.h, 4) };
+  };
+  // a photo cropped to window r, the whole photo at g (both in the units of its box o before the change)
+  const setWindow = (t, o, g, r) => {
+    const d = fromBox({ rot: o.rot || 0, fx: o.flipX ? -1 : 1, fy: o.flipY ? -1 : 1 }, r.x + r.w / 2 - o.w / 2, r.y + r.h / 2 - o.h / 2);
+    t.crop = { x: (r.x - g.x) / g.w, y: (r.y - g.y) / g.h, w: r.w / g.w, h: r.h / g.h };
+    Object.assign(t, { w: r.w, h: r.h, x: o.x + o.w / 2 + d.x - r.w / 2, y: o.y + o.h / 2 + d.y - r.h / 2 });
+  };
+  // move the photo by d (box units) behind the frame or the crop window
+  const panPhoto = (c, t, o, box, g, d) =>
+    c.kind === 'image'
+      ? setWindow(t, o, { ...g, x: U.clamp(g.x + d.x, o.w - g.w, 0), y: U.clamp(g.y + d.y, o.h - g.h, 0) }, { x: 0, y: 0, w: o.w, h: o.h })
+      : setFit(t, box.w, box.h, { ...g, x: g.x + d.x, y: g.y + d.y });
+  // the crop window after its handle h moved by d, inside the photo g; `ratio` keeps its shape from the opposite corner
+  function cropEdges(o, g, h, d, ratio) {
+    const mw = Math.max(0.02 * g.w, 10 / E.zoom), mh = Math.max(0.02 * g.h, 10 / E.zoom);
+    let x1 = 0, y1 = 0, x2 = o.w, y2 = o.h;
+    if (h.includes('w')) x1 = U.clamp(d.x, g.x, x2 - mw);
+    if (h.includes('e')) x2 = U.clamp(o.w + d.x, x1 + mw, g.x + g.w);
+    if (h.includes('n')) y1 = U.clamp(d.y, g.y, y2 - mh);
+    if (h.includes('s')) y2 = U.clamp(o.h + d.y, y1 + mh, g.y + g.h);
+    if (ratio && h.length === 2) {
+      const sx = h.includes('w') ? -1 : 1, sy = h.includes('n') ? -1 : 1, ax = sx < 0 ? x2 : x1, ay = sy < 0 ? y2 : y1;
+      let w = x2 - x1, hh = y2 - y1;
+      if (w / hh > ratio) hh = w / ratio;
+      else w = hh * ratio;
+      const k = Math.min(1, (sx > 0 ? g.x + g.w - ax : ax - g.x) / w, (sy > 0 ? g.y + g.h - ay : ay - g.y) / hh);
+      w *= k;
+      hh *= k;
+      x1 = sx > 0 ? ax : ax - w;
+      y1 = sy > 0 ? ay : ay - hh;
+      x2 = x1 + w;
+      y2 = y1 + hh;
+    }
+    return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+  }
+  // a frame's photo box after its corner h moved by d: it scales about the opposite corner
+  function cornerZoom(g, h, d) {
+    const sx = h.includes('w') ? -1 : 1, sy = h.includes('n') ? -1 : 1, ax = sx > 0 ? g.x : g.x + g.w, ay = sy > 0 ? g.y : g.y + g.h;
+    const w = Math.max(1, g.w + sx * d.x, ((g.h + sy * d.y) * g.w) / g.h), hh = (w * g.h) / g.w;
+    return { x: sx > 0 ? ax : ax - w, y: sy > 0 ? ay : ay - hh, w, h: hh };
+  }
+  const syncPanel = U.debounce(() => E.d && A.EU.refreshPanel(), 150);
+  // redraw after a live change; `keepBar` leaves the floating bar alone (its zoom slider is being dragged)
+  const cropDraw = (keepBar) => {
+    E.renderPage(E.pi);
+    const old = keepBar && E.blocks[E.pi]?.overlay.querySelector('.crop-layer');
+    if (old) old.replaceWith(cropLayer());
+    else E.drawOverlay();
+  };
+  E.cropNudge = (dx, dy) => {
+    const c = E.cropping;
+    if (!c) return;
+    const { t, box, img } = cropGeom(c);
+    panPhoto(c, t, { ...t }, box, img, toBox(box, dx, dy));
+    cropDraw();
+    syncPanel();
+  };
+  // zoom the photo by k about `at` (box units; the middle of the box by default)
+  E.cropZoom = (k, at, keepBar) => {
+    const c = E.cropping;
+    if (!c) return;
+    const { t, box, img: g } = cropGeom(c), o = { ...t }, p = at || { x: box.w / 2, y: box.h / 2 };
+    if (c.kind === 'image') {
+      // the crop window stays: the photo grows behind it until the window is 2% of it, and shrinks until it fills it
+      k = U.clamp(k, Math.max(o.w / g.w, o.h / g.h), Math.min(o.w / g.w, o.h / g.h) / 0.02);
+      const w = g.w * k, h = g.h * k;
+      setWindow(t, o, { x: U.clamp(p.x - (p.x - g.x) * k, o.w - w, 0), y: U.clamp(p.y - (p.y - g.y) * k, o.h - h, 0), w, h }, { x: 0, y: 0, w: o.w, h: o.h });
+    } else setFit(t, box.w, box.h, { x: p.x - (p.x - g.x) * k, y: p.y - (p.y - g.y) * k, w: g.w * k, h: g.h * k });
+    cropDraw(keepBar);
+    syncPanel();
+  };
+  // the largest window of ratio r (width / height) in the photo, about as big as the current one and around its centre
+  E.cropRatio = (r) => {
+    const c = E.cropping;
+    if (c?.kind !== 'image') return;
+    c.ratio = r;
+    if (r) {
+      const { t, img: g } = cropGeom(c), o = { ...t };
+      let w = Math.min(g.w, g.h * r), h = w / r;
+      const k = Math.min(1, Math.max(o.w, o.h) / Math.max(w, h));
+      w *= k;
+      h *= k;
+      setWindow(t, o, g, { x: U.clamp(o.w / 2 - w / 2, g.x, g.x + g.w - w), y: U.clamp(o.h / 2 - h / 2, g.y, g.y + g.h - h), w, h });
+    }
+    cropDraw();
+    syncPanel();
+  };
+  // the whole photo again: a cropped one at its own shape, as wide as before and around the same centre
+  E.cropReset = () => {
+    const c = E.cropping, t = cropTarget(c);
+    if (!t) return;
+    if (c.kind === 'image') {
+      const o = { ...t }, { img: g } = cropGeom(c), h = hasSize(o) ? (o.w * o.nh) / o.nw : (o.w * g.h) / g.w, r = { x: 0, y: (o.h - h) / 2, w: o.w, h };
+      setWindow(t, o, r, r);
+    } else delete t.fit;
+    c.ratio = null;
+    cropDraw();
+    syncPanel();
+  };
+  function cropDrag(e, h) {
+    const c = E.cropping, { t, box, img: g } = cropGeom(c), o = { ...t }, sx = e.clientX, sy = e.clientY;
+    let moved = false;
+    session(
+      e,
+      (ev) => {
+        if (E.cropping !== c || (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3)) return;
+        moved = E.dragging = true;
+        const d = toBox(box, (ev.clientX - sx) / E.zoom, (ev.clientY - sy) / E.zoom);
+        if (h === 'pan') panPhoto(c, t, o, box, g, d);
+        else if (c.kind === 'image') setWindow(t, o, g, cropEdges(o, g, h, d, c.ratio || (ev.shiftKey && h.length === 2 && o.w / o.h)));
+        else setFit(t, box.w, box.h, cornerZoom(g, h, d));
+        cropDraw();
+      },
+      () => {
+        if (!moved || E.cropping !== c) return;
+        E.drawOverlay();
+        A.EU.refreshPanel();
+      }
+    );
+  }
+  function cropWheel(e) {
+    const c = E.cropping;
+    if (e.ctrlKey || e.metaKey || !c) return;
+    e.preventDefault();
+    const { box } = cropGeom(c), p = E.toPage(e, c.pi), l = toBox(box, p.x - box.x - box.w / 2, p.y - box.y - box.h / 2);
+    E.cropZoom(U.clamp(Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : e.deltaMode === 2 ? 1 : 0.002)), 0.5, 2), { x: l.x + box.w / 2, y: l.y + box.h / 2 });
+  }
+  // The photo faded beyond its frame (past the page edges too), outlines, handles and the area that drags it, drawn
+  // in the box's own (rotated, flipped) space in screen pixels.
+  function cropLayer() {
+    const c = E.cropping, { t, box, img: g } = cropGeom(c), z = E.zoom, W = box.w * z, H = box.h * z, url = S.assetURL(t.asset);
+    const q = (v) => U.round(v, 2), rect = (o) => `x="${q(o.x * z)}" y="${q(o.y * z)}" width="${q(o.w * z)}" height="${q(o.h * z)}"`;
+    const win = c.kind === 'frame' ? R.shapePath(t.shape, W, H, (t.radius || 0) * z) : `M0 0H${q(W)}V${q(H)}H0Z`;
+    const hit = coarse.matches ? 22 : 11, cursor = { n: 'ns', s: 'ns', e: 'ew', w: 'ew', nw: 'nwse', se: 'nwse', ne: 'nesw', sw: 'nesw' };
+    // corners are dots, sides bars (h: across, v: up and down), each in a larger invisible target
+    const handle = (k, x, y, side) =>
+      `<g data-h="${k}" style="cursor:${cursor[k]}-resize"><circle cx="${q(x)}" cy="${q(y)}" r="${hit}" fill="transparent"/>` +
+      (side ? `<rect class="crop-dot" x="${q(x - (side === 'h' ? 11 : 3.5))}" y="${q(y - (side === 'h' ? 3.5 : 11))}" width="${side === 'h' ? 22 : 7}" height="${side === 'h' ? 7 : 22}" rx="3"/>` : `<circle class="crop-dot" cx="${q(x)}" cy="${q(y)}" r="7"/>`) +
+      '</g>';
+    let handles = '', grid = '';
+    if (c.kind === 'image') {
+      for (const [k, x, y] of [['nw', 0, 0], ['ne', W, 0], ['sw', 0, H], ['se', W, H]]) handles += handle(k, x, y);
+      if (!c.ratio && W > 40 && H > 40) for (const [k, x, y, s] of [['n', W / 2, 0, 'h'], ['s', W / 2, H, 'h'], ['w', 0, H / 2, 'v'], ['e', W, H / 2, 'v']]) handles += handle(k, x, y, s);
+      grid = [1, 2].map((i) => `<path class="crop-grid" d="M${q((W * i) / 3)} 0V${q(H)}M0 ${q((H * i) / 3)}H${q(W)}"/>`).join('');
+    } else for (const [k, x, y] of [['nw', g.x, g.y], ['ne', g.x + g.w, g.y], ['sw', g.x, g.y + g.h], ['se', g.x + g.w, g.y + g.h]]) handles += handle(k, x * z, y * z);
+    const el = U.h('div.crop-layer', {
+      style: { left: box.x * z + 'px', top: box.y * z + 'px', width: W + 'px', height: H + 'px', transform: `rotate(${box.rot}deg) scale(${box.fx}, ${box.fy})` },
+      html:
+        `<svg width="${q(W)}" height="${q(H)}" overflow="visible"><defs><clipPath id="crop-out"><path clip-rule="evenodd" d="M-99999 -99999H99999V99999H-99999Z${win}"/></clipPath></defs>` +
+        `<image class="crop-ghost" href="${U.esc(url)}" ${rect(g)} preserveAspectRatio="none" clip-path="url(#crop-out)"/><rect class="crop-pan" ${rect(g)}/>` +
+        `<rect class="crop-edge" ${rect(g)}/>${grid}<path class="crop-win" d="${win}"/>${handles}</svg>`,
+    });
+    el.addEventListener('pointerdown', (e) => {
+      const h = e.target.closest('[data-h]')?.getAttribute('data-h') || (e.target.closest('.crop-pan') && 'pan');
+      if (e.button !== 0 || !h) return;
+      e.stopPropagation();
+      cropDrag(e, h);
+    });
+    el.addEventListener('wheel', cropWheel, { passive: false });
+    return el;
+  }
+  // Aspect ratios (photos) or a zoom slider (frames, background), Reset and Done, above the frame.
+  function cropBar(b) {
+    const c = E.cropping, t = cropTarget(c);
+    const btn = (icon, title, fn, txt, on) => U.h('button.mini-btn' + (on ? '.on' : ''), { title, onclick: fn }, txt ? U.h('span.mini-txt', txt) : U.ic(icon, 16));
+    let kids;
+    if (c.kind === 'image') kids = CROP_RATIOS.map(([l, r]) => btn(null, r ? 'Crop to ' + l : 'Free crop', () => E.cropRatio(r), l, c.ratio === r));
+    else {
+      const v = Math.round((t.fit?.s || 1) * 100);
+      const zr = U.h('input.crop-zoom', { type: 'range', min: 100, max: Math.max(400, v), step: 1, value: v, title: 'Zoom', 'aria-label': 'Zoom' });
+      zr.addEventListener('input', () => E.cropZoom(+zr.value / 100 / (cropTarget()?.fit?.s || 1), null, true));
+      kids = [U.ic('zoomin', 16), zr];
+    }
+    const m = U.h('div.mini-menu.crop-bar', kids, U.h('span.crop-sep'), btn('restore', 'Reset', () => E.cropReset()), btn('check', 'Done (Enter)', () => E.endCrop()));
+    m.addEventListener('pointerdown', (e) => e.stopPropagation());
+    floatMenu(b, m, c.kind === 'bg' ? { x: 0, y: 0, w: E.d.width, h: E.d.height } : E.bbox(t));
+  }
+  // false when the session cannot go on (the photo is gone or locked, or another page is showing): it just ends
+  function drawCrop(b) {
+    const c = E.cropping, t = cropTarget(c);
+    if (c.pi !== E.pi || !t?.asset || t.locked || E.page().locked || (c.kind !== 'image' && !hasSize(t)) || (c.kind === 'frame' && !E.isPhotoFrame(t))) {
+      E.cropping = null;
+      return false;
+    }
+    b.overlay.appendChild(cropLayer());
+    if (!E.dragging) cropBar(b);
+    return true;
+  }
 
   // ---------- element operations ----------
   E.visibleCenter = () => {
@@ -1516,7 +1820,9 @@
   E.setBackgroundFromImage = () => {
     const el = E.selEls()[0];
     if (!el || el.type !== 'image' || !E.editEls().includes(el)) return;
-    E.page().bg ={ ...(E.page().bg || {}), asset: el.asset, adj: el.adj };
+    const bg = { ...(E.page().bg || {}), asset: el.asset, adj: el.adj, nw: el.nw, nh: el.nh };
+    delete bg.fit;
+    E.page().bg = bg;
     E.page().elements = E.els().filter((e) => e !== el);
     E.sel = [];
     E.changed();
@@ -1567,6 +1873,17 @@
     if (typingIn(ae) || own) return;
     if (document.querySelector('.modal-back') || A.Present?.active) return;
     const stop = () => e.preventDefault();
+    // crop mode: Enter finishes, Esc cancels, arrows move the photo and + / − zoom it (Delete deletes nothing)
+    if (E.cropping && !mod && (['enter', 'escape', 'delete', 'backspace', '+', '=', '-'].includes(k) || k.startsWith('arrow'))) {
+      if (k === 'enter' && ae?.closest('button')) return;
+      stop();
+      const s = e.shiftKey ? 10 : 1;
+      if (k === 'enter') E.endCrop();
+      else if (k === 'escape') E.endCrop(false);
+      else if (k.startsWith('arrow')) E.cropNudge(k === 'arrowleft' ? -s : k === 'arrowright' ? s : 0, k === 'arrowup' ? -s : k === 'arrowdown' ? s : 0);
+      else if (k !== 'delete' && k !== 'backspace') E.cropZoom(k === '-' ? 1 / 1.1 : 1.1);
+      return;
+    }
     // the text editor is open but lost focus (e.g. to a toolbar button): keys go back to the text
     if (E.editingId && !mod) {
       if (k === 'escape') E.finishText();
@@ -1619,7 +1936,10 @@
     }
     if (k === 'enter') {
       const el = E.selEls()[0];
-      if (el && (el.type === 'text' || el.type === 'shape')) { stop(); E.editText(el); }
+      if (!el) return;
+      if (el.type === 'image' || E.isPhotoFrame(el)) { stop(); E.startCrop(el); }
+      else if (el.type === 'shape' && el.frame) { stop(); A.EU.openPanel('uploads', 'frame'); }
+      else if (el.type === 'text' || el.type === 'shape') { stop(); E.editText(el); }
       return;
     }
     if (k === '/') { stop(); return A.EU.quickMenu(); }
@@ -1658,24 +1978,35 @@
       E.add(el);
     }
   };
+  // the photo frame under a drop point (on any page), when it may take a photo
+  const frameAt = (x, y) => {
+    const t = document.elementFromPoint(x, y)?.closest?.('.page-svg [data-id]'), pi = +t?.closest('.page-block')?.dataset.pi;
+    const page = t && E.d.pages[pi], el = page?.elements.find((o) => o.id === t.getAttribute('data-id'));
+    return el?.type === 'shape' && (el.frame || el.asset) && !el.locked && !page.locked ? { el, pi } : null;
+  };
+  // A photo dropped onto a frame fills it, in one undo step; anywhere else it is added to the page.
+  E.dropPhoto = (a, at) => {
+    if (!at || !E.d.pages[at.pi]?.elements.includes(at.el)) return E.addImageAsset(a, { center: true });
+    if (at.pi !== E.pi) E.setPage(at.pi, false);
+    E.finishText();
+    E.fillFrame(at.el, a);
+    if (at.el.groupId) E.enteredGroup = at.el.groupId;
+    E.sel = [at.el.id];
+    E.changed();
+    A.EU.onSelectionChange?.();
+  };
   E.onDrop = async (e) => {
     if (!E.d) return;
     e.preventDefault();
-    const files = [...(e.dataTransfer?.files || [])];
+    // the drag data is gone after the first await; the frame is found before anything is added over it
+    const files = [...(e.dataTransfer?.files || [])], item = e.dataTransfer?.getData('application/x-atelier');
+    let frame = frameAt(e.clientX, e.clientY);
     for (const f of files) {
       if (f.type.startsWith('image/')) {
-        if (!E.canEdit()) return;
-        const a = await S.addAsset(f, { name: f.name });
-        const el = E.addImageAsset(a, { center: true });
-        // drop onto a frame fills it
-        const t = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('[data-id]');
-        const target = t && E.byId(t.getAttribute('data-id'));
-        if (target && target.type === 'shape' && target.frame) {
-          target.asset = a.id;
-          E.page().elements = E.els().filter((x) => x !== el);
-          E.sel = [target.id];
-          E.changed();
-        }
+        if (!frame && !E.canEdit()) return;
+        // of several photos, the first fills the frame
+        E.dropPhoto(await S.addAsset(f, { name: f.name }), frame);
+        frame = null;
       } else if (f.type.startsWith('audio/')) {
         const a = await S.addAsset(f, { name: f.name });
         E.d.audio = a.id;
@@ -1683,7 +2014,13 @@
         U.toast('Audio added to the design');
       } else await A.app.importFile(f, { toEditor: true });
     }
-    const tplData = e.dataTransfer?.getData('application/x-atelier');
-    if (tplData) A.EU.dropItem(JSON.parse(tplData), e);
+    if (!item) return;
+    const it = JSON.parse(item);
+    if (it.kind !== 'image') return A.EU.dropItem(it, e);
+    // an upload dragged from the Uploads panel
+    const a = await S.get('assets', it.asset);
+    if (!a || (!frame && !E.canEdit())) return;
+    await S.ensureAssetURLs([a.id]);
+    E.dropPhoto(a, frame);
   };
 })(window.A);

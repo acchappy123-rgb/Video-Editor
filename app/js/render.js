@@ -513,6 +513,20 @@
     return `<rect width="${n(w)}" height="${n(h)}" fill="url(#${gid})"/>`;
   }
 
+  // A photo of natural size nw×nh covering a w×h box, zoomed by fit.s, with its point (fit.cx, fit.cy) (fractions of
+  // the photo) as near the box centre as the edges allow.
+  R.fitBox = (w, h, nw, nh, fit) => {
+    const f = fit || {}, k = Math.max(w / nw, h / nh) * Math.max(1, f.s || 1), iw = nw * k, ih = nh * k;
+    return { x: U.clamp(w / 2 - (f.cx ?? 0.5) * iw, w - iw, 0), y: U.clamp(h / 2 - (f.cy ?? 0.5) * ih, h - ih, 0), w: iw, h: ih };
+  };
+  // frames and backgrounds saved without the photo's natural size are centred
+  function fitImage(url, w, h, t, fid) {
+    const f = fid ? ` filter="url(#${fid})"` : '';
+    if (!(t.nw > 0 && t.nh > 0)) return `<image href="${esc(url)}" xlink:href="${esc(url)}" width="${n(w)}" height="${n(h)}" preserveAspectRatio="xMidYMid slice"${f}/>`;
+    const b = R.fitBox(w, h, t.nw, t.nh, t.fit);
+    return `<image href="${esc(url)}" xlink:href="${esc(url)}" x="${n(b.x)}" y="${n(b.y)}" width="${n(b.w)}" height="${n(b.h)}" preserveAspectRatio="none"${f}/>`;
+  }
+
   function shapeInner(el, ctx, st) {
     const d = R.shapePath(el.shape, el.w, el.h, el.radius || 0);
     const da = dashArray(el.dash, el.strokeWidth);
@@ -524,7 +538,7 @@
       const f = R.imageFilter(el.adj, fid, el.duo);
       if (f) ctx.defs.push(f);
       const url = ctx.asset(el.asset);
-      out += `<g clip-path="url(#${cid})"><rect width="${n(el.w)}" height="${n(el.h)}" fill="#ddd"/>${url ? `<image href="${esc(url)}" xlink:href="${esc(url)}" width="${n(el.w)}" height="${n(el.h)}" preserveAspectRatio="xMidYMid slice"${f ? ` filter="url(#${fid})"` : ''}/>` : ''}${vignette(el, ctx, el.w, el.h)}</g>`;
+      out += `<g clip-path="url(#${cid})"><rect width="${n(el.w)}" height="${n(el.h)}" fill="#ddd"/>${url ? fitImage(url, el.w, el.h, el, f && fid) : ''}${vignette(el, ctx, el.w, el.h)}</g>`;
       if (el.strokeWidth) out += `<path d="${d}" fill="none" stroke="${esc(el.stroke)}" stroke-width="${n(el.strokeWidth)}"${da ? ` stroke-dasharray="${da}" stroke-linecap="round"` : ''}/>`;
     } else {
       out += `<path d="${d}" fill="${R.paint(el.fill, ctx, el.id)}" fill-rule="evenodd"${el.strokeWidth ? ` stroke="${esc(el.stroke)}" stroke-width="${n(el.strokeWidth)}"${da ? ` stroke-dasharray="${da}" stroke-linecap="round"` : ''}` : ''}/>`;
@@ -679,7 +693,7 @@
       const fid = did(ctx, 'bgf', page.id);
       const f = R.imageFilter(bg.adj, fid);
       if (f) ctx.defs.push(f);
-      out += `<image href="${esc(ctx.asset(bg.asset))}" xlink:href="${esc(ctx.asset(bg.asset))}" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"${f ? ` filter="url(#${fid})"` : ''}/>`;
+      out += fitImage(ctx.asset(bg.asset), design.width, design.height, bg, f && fid);
       if (bg.overlay) out += `<rect width="${W}" height="${H}" fill="${esc(bg.overlay)}" opacity="${n(bg.overlayOpacity ?? 0.35)}"/>`;
     }
     return out;

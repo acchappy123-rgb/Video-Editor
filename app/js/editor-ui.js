@@ -60,7 +60,9 @@
     E.scrollEl.addEventListener('dragover', (e) => e.preventDefault());
     E.scrollEl.addEventListener('drop', E.onDrop);
     E.scrollEl.addEventListener('pointerdown', (e) => {
-      if (e.target === E.scrollEl || e.target === E.pagesEl) E.deselect();
+      if (e.target !== E.scrollEl && e.target !== E.pagesEl) return;
+      E.endCrop();
+      E.deselect();
     });
     // Ctrl+wheel and trackpad pinch zoom in proportion to the gesture (pinches send many small deltas),
     // once per frame and around the cursor
@@ -128,6 +130,8 @@
   EU.togglePanel = (id) => (EU.panel === id && EU.panelOpen ? EU.closePanel() : EU.openPanel(id));
   EU.openPanel = (id, arg) => {
     if (EU.panel === 'draw' && id !== 'draw') { E.tool = null; EU.refreshTool(); }
+    // another panel ends a crop (the Crop panel edits the same photo)
+    if (id !== 'crop') E.endCrop();
     EU.panel = id;
     EU.panelArg = arg;
     EU.panelOpen = true;
@@ -161,7 +165,7 @@
   // A typed panel whose selection no longer fits (another click, an undo) gives way to Elements.
   function showPanel() {
     const els = E.selEls();
-    const fits = { effects: (x) => x.type === 'text', imageEdit: (x) => x.type === 'image' || x.asset, crop: (x) => x.type === 'image', chart: (x) => x.type === 'chart', table: (x) => x.type === 'table' }[EU.panel];
+    const fits = { effects: (x) => x.type === 'text', imageEdit: (x) => x.type === 'image' || x.asset, crop: (x) => x.type === 'image' || E.isPhotoFrame(x), chart: (x) => x.type === 'chart', table: (x) => x.type === 'table' }[EU.panel];
     // typed panels edit every selected element, so all must fit; crop, chart and table data are per element
     const ok = !fits || (els.length > 0 && els.every(fits) && (els.length === 1 || ['effects', 'imageEdit'].includes(EU.panel)));
     if (ok) EU.renderPanel();
@@ -271,12 +275,18 @@
     const page = E.page();
     const add = (...n) => n.forEach((x) => x && tb.appendChild(x));
     const sep = () => h('span.tb-sep');
+    // crop mode can be finished from here too (its floating bar may be out of view)
+    if (E.cropping) add(EU.tbBtn('check', 'Done (Enter)', () => E.endCrop(), { active: true, label: 'Done' }), EU.tbBtn('restore', 'Reset', () => E.cropReset(), { label: 'Reset' }), EU.tbBtn('x', 'Cancel (Esc)', () => E.endCrop(false)), sep());
+    // Crop starts cropping (with its panel) or, while that photo is being cropped, finishes it
+    const isCropping = (t) => !!E.cropping && (t === 'bg' ? E.cropping.kind === 'bg' : E.cropping.id === t.id);
+    const cropBtn = (el) => EU.tbBtn('crop', 'Crop', () => { if (isCropping(el)) return E.endCrop(); EU.openPanel('crop'); E.startCrop(el); }, { label: 'Crop', active: isCropping(el) });
     if (!els.length) {
       add(
         // the picker stays open across undo, which replaces the page object
         EU.swatchBtn(page.bg?.color || '#ffffff', 'Background colour', (c, fin) => { if (E.canEdit && !E.canEdit()) return; const pg = E.page(); pg.bg = { ...(pg.bg || {}), color: c }; E.changed({ commit: fin, toolbar: fin }); }),
         EU.tbBtn('image', 'Background image', () => EU.openPanel('uploads', 'background'), { label: 'Background image' }),
-        page.bg?.asset ? EU.tbBtn('x', 'Remove background image', () => { if (E.canEdit && !E.canEdit()) return; delete E.page().bg.asset; E.changed(); }, { label: 'Remove image' }) : null,
+        page.bg?.asset ? EU.tbBtn('crop', 'Adjust background', () => (isCropping('bg') ? E.endCrop() : E.startCrop('bg')), { label: 'Adjust', active: isCropping('bg') }) : null,
+        page.bg?.asset ? EU.tbBtn('x', 'Remove background image', () => { if (E.canEdit && !E.canEdit()) return; E.endCrop(); const bg = E.page().bg; ['asset', 'nw', 'nh', 'fit'].forEach((k) => delete bg[k]); E.changed(); }, { label: 'Remove image' }) : null,
         sep(),
         EU.tbBtn('animate', 'Animate page', () => EU.openPanel('animate', 'page'), { label: 'Animate' }),
         E.layout() === 'strip' || E.d.type === 'presentation' ? durationInput(page) : null,
@@ -302,17 +312,25 @@
     if (same && (el.type === 'text' || (el.type === 'shape' && (el.text || editing)))) textTools(add, sep, el);
     if (same && el.type === 'shape') {
       if (el.asset) {
-        add(EU.tbBtn('sliders', 'Edit image', () => EU.openPanel('imageEdit'), { label: 'Edit image' }), EU.tbBtn('x', 'Remove image from frame', () => EU.apply((x) => delete x.asset), { label: 'Detach' }));
-      } else add(EU.swatchBtn(el.fill, 'Fill colour', (c, fin) => EU.apply((x) => (x.fill = c), fin), { opts: { none: true } }));
+        add(
+          EU.tbBtn('sliders', 'Edit image', () => EU.openPanel('imageEdit'), { label: 'Edit image' }),
+          els.length === 1 ? cropBtn(el) : null,
+          EU.tbBtn('x', 'Remove image from frame', () => { E.endCrop(); EU.apply((x) => ['asset', 'nw', 'nh', 'fit'].forEach((k) => delete x[k])); }, { label: 'Detach' })
+        );
+      } else {
+        add(EU.swatchBtn(el.fill, 'Fill colour', (c, fin) => EU.apply((x) => (x.fill = c), fin), { opts: { none: true } }));
+        if (el.frame && els.length === 1) add(EU.tbBtn('image', 'Add a photo to the frame', () => EU.openPanel('uploads', 'frame'), { label: 'Add photo' }));
+      }
       add(borderBtn(el));
       if (['rect', 'rounded'].includes(el.shape)) add(radiusBtn(el, 'radius'));
-      if (!el.text && !editing) add(EU.tbBtn('text', 'Add text', () => E.editText(el)));
+      // frames hold photos, not text
+      if (!el.text && !editing && !el.frame && !el.asset) add(EU.tbBtn('text', 'Add text', () => E.editText(el)));
       add(EU.tbBtn('effects', 'Shadow', () => EU.apply((x) => (x.shadow = !x.shadow)), { active: !!el.shadow }));
     }
     if (same && el.type === 'image') {
       add(
         EU.tbBtn('sliders', 'Edit photo', () => EU.openPanel('imageEdit'), { label: 'Edit' }),
-        els.length === 1 ? EU.tbBtn('crop', 'Crop', () => EU.openPanel('crop'), { label: 'Crop' }) : null,
+        els.length === 1 ? cropBtn(el) : null,
         EU.tbBtn('flip', 'Flip', (e) => U.menu(e.currentTarget, [{ label: 'Flip horizontal', icon: 'flip', onClick: () => E.flip('h') }, { label: 'Flip vertical', icon: 'flip', onClick: () => E.flip('v') }]), { label: 'Flip' }),
         radiusBtn(el, 'radius'),
         EU.tbBtn('effects', 'Shadow', () => EU.apply((x) => (x.shadow = !x.shadow)), { active: !!el.shadow })
@@ -471,6 +489,7 @@
       return U.menu(anchor, [
         { label: 'Paste', icon: 'copy', shortcut: 'Ctrl+V', onClick: () => E.paste(), disabled: !E.clip },
         { label: 'Select all', icon: 'grid', shortcut: 'Ctrl+A', onClick: () => E.selectAll() },
+        E.page().bg?.asset ? { label: 'Adjust background', icon: 'crop', onClick: () => E.startCrop('bg') } : null,
         { divider: true },
         { label: 'Add page', icon: 'addpage', onClick: () => E.addPage(E.pi + 1) },
         { label: 'Duplicate page', icon: 'copy', onClick: () => E.duplicatePage(E.pi) },
@@ -498,6 +517,8 @@
       { label: unlock || 'Lock', icon: unlock ? 'unlock' : 'lock', onClick: () => E.toggleLock() },
       { label: el.link ? 'Edit link' : 'Link', icon: 'link', onClick: () => EU.linkDialog() },
       { label: 'Comment', icon: 'comment', onClick: () => EU.addComment(el) },
+      els.length === 1 && (el.type === 'image' || E.isPhotoFrame(el)) ? { label: 'Crop', icon: 'crop', onClick: () => E.startCrop(el) } : null,
+      E.isPhotoFrame(el) ? { label: 'Replace photo', icon: 'upload', onClick: () => EU.openPanel('uploads', 'frame') } : null,
       el.type === 'image' ? { label: 'Set image as background', icon: 'image', onClick: () => E.setBackgroundFromImage() } : null,
       el.type === 'image' ? { label: 'Replace image', icon: 'upload', onClick: () => EU.openPanel('uploads', 'replace') } : null,
       ['shape'].includes(el.type) && !el.asset ? { label: 'Use as photo frame', icon: 'frame', onClick: () => { EU.apply((x) => (x.frame = true)); EU.openPanel('uploads', 'frame'); } } : null,
