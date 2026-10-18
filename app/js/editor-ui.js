@@ -459,17 +459,24 @@
     s.addEventListener('change', () => fn(s.value));
     return s;
   }
-  function alignMenu(anchor) {
+  // to: 'page', or 'auto' (the page for one element or group, else the Position panel's 'Align to')
+  function alignMenu(anchor, to = 'auto') {
+    const us = E.units(), multi = us.length > 1;
+    const target = to === 'page' ? 'page' : E.alignTo === 'key' && !E.keyUnit(us) ? 'selection' : E.alignTo;
+    // Alt+letter aligns as 'auto' does
+    const it = (label, icon, how, key) => ({ label, icon, shortcut: to === 'auto' || !multi ? 'Alt+' + key : '', onClick: () => E.align(how, { to }) });
     U.menu(anchor, [
-      { label: 'Align left', icon: 'alignl', onClick: () => E.align('left') },
-      { label: 'Align centre', icon: 'alignc', onClick: () => E.align('center') },
-      { label: 'Align right', icon: 'alignr', onClick: () => E.align('right') },
-      { label: 'Align top', icon: 'up', onClick: () => E.align('top') },
-      { label: 'Align middle', icon: 'spacing', onClick: () => E.align('middle') },
-      { label: 'Align bottom', icon: 'down', onClick: () => E.align('bottom') },
-      { divider: true },
-      { label: 'Distribute horizontally', icon: 'split', onClick: () => E.distribute('h') },
-      { label: 'Distribute vertically', icon: 'spacing', onClick: () => E.distribute('v') },
+      multi ? { header: { selection: 'Align to selection', key: 'Align to key object', page: 'Align to page' }[target] } : null,
+      it('Align left', 'alignl', 'left', 'A'),
+      it('Align centre', 'alignc', 'center', 'H'),
+      it('Align right', 'alignr', 'right', 'D'),
+      it('Align top', 'up', 'top', 'W'),
+      it('Align middle', 'spacing', 'middle', 'V'),
+      it('Align bottom', 'down', 'bottom', 'S'),
+      multi ? { divider: true } : null,
+      multi ? { label: 'Distribute horizontally', icon: 'split', onClick: () => E.distribute('h') } : null,
+      multi ? { label: 'Distribute vertically', icon: 'spacing', onClick: () => E.distribute('v') } : null,
+      multi ? { label: 'Tidy up', icon: 'grid', onClick: () => E.tidy() } : null,
     ]);
   }
 
@@ -498,17 +505,21 @@
       { label: 'Duplicate', icon: 'copy', shortcut: 'Ctrl+D', onClick: () => E.duplicate() },
       { label: 'Delete', icon: 'trash', shortcut: 'Del', onClick: () => E.deleteSel(), danger: true },
       { divider: true },
-      { label: 'Copy style', icon: 'effects', onClick: () => E.copyStyle() },
-      { label: 'Paste style', icon: 'effects', onClick: () => E.pasteStyle(), disabled: !E.styleClip },
+      { label: 'Copy style', icon: 'effects', shortcut: 'Ctrl+Alt+C', onClick: () => E.copyStyle() },
+      { label: 'Paste style', icon: 'effects', shortcut: 'Ctrl+Alt+V', onClick: () => E.pasteStyle(), disabled: !E.styleClip },
       { divider: true },
-      { label: 'Bring forward', icon: 'forward', onClick: () => E.order('forward') },
-      { label: 'Bring to front', icon: 'tofront', onClick: () => E.order('front') },
-      { label: 'Send backward', icon: 'backward', onClick: () => E.order('backward') },
-      { label: 'Send to back', icon: 'backward', onClick: () => E.order('back') },
-      { label: 'Align to page…', icon: 'alignc', onClick: () => alignMenu(anchor) },
+      { label: 'Bring forward', icon: 'forward', shortcut: 'Ctrl+]', onClick: () => E.order('forward') },
+      { label: 'Bring to front', icon: 'tofront', shortcut: 'Ctrl+Shift+]', onClick: () => E.order('front') },
+      { label: 'Send backward', icon: 'backward', shortcut: 'Ctrl+[', onClick: () => E.order('backward') },
+      { label: 'Send to back', icon: 'backward', shortcut: 'Ctrl+Shift+[', onClick: () => E.order('back') },
+      E.units(els).length > 1 ? { label: 'Align elements…', icon: 'alignc', onClick: () => alignMenu(anchor) } : null,
+      { label: 'Align to page…', icon: 'alignc', onClick: () => alignMenu(anchor, 'page') },
+      el.type !== 'line' ? { label: 'Flip horizontal', icon: 'flip', shortcut: 'Shift+H', onClick: () => E.flip('h') } : null,
+      el.type !== 'line' ? { label: 'Flip vertical', icon: 'flip', shortcut: 'Shift+V', onClick: () => E.flip('v') } : null,
       { divider: true },
       els.length > 1 ? { label: grouped ? 'Ungroup' : 'Group', icon: 'group', shortcut: grouped ? 'Ctrl+Shift+G' : 'Ctrl+G', onClick: () => (grouped ? E.ungroup() : E.group()) } : null,
-      { label: unlock || 'Lock', icon: unlock ? 'unlock' : 'lock', onClick: () => E.toggleLock() },
+      { label: unlock || 'Lock', icon: unlock ? 'unlock' : 'lock', shortcut: 'Ctrl+Shift+L', onClick: () => E.toggleLock() },
+      { label: els.every((x) => x.hidden) ? 'Show' : 'Hide', icon: els.every((x) => x.hidden) ? 'eye' : 'eyeoff', shortcut: 'Ctrl+Shift+H', onClick: () => E.toggleHidden() },
       { label: el.link ? 'Edit link' : 'Link', icon: 'link', onClick: () => EU.linkDialog() },
       { label: 'Comment', icon: 'comment', onClick: () => EU.addComment(el) },
       el.type === 'image' ? { label: 'Set image as background', icon: 'image', onClick: () => E.setBackgroundFromImage() } : null,
@@ -607,6 +618,7 @@
       ['Line', () => E.addLine()], ['Arrow', () => E.addLine({ end: 'arrow' })], ['Sticky note', () => E.add(M.newSticky())],
       ['Bar chart', () => E.add(M.newChart('bar'))], ['Pie chart', () => E.add(M.newChart('pie'))], ['Line chart', () => E.add(M.newChart('line'))], ['Table', () => E.add(M.newTable())],
       ['Add page', () => E.addPage(E.pi + 1)], ['Duplicate page', () => E.duplicatePage(E.pi)],
+      ['Tidy up', () => E.tidy()], ['Space evenly horizontally', () => E.distribute('h')], ['Space evenly vertically', () => E.distribute('v')], ['Hide / show', () => E.toggleHidden()],
       ['Draw', () => EU.openPanel('draw')], ['Upload files', () => EU.openPanel('uploads')], ['Templates', () => EU.openPanel('design')], ['Brand kit', () => EU.openPanel('brand')], ['AI tools', () => EU.openPanel('ai')], ['Apps', () => EU.openPanel('apps')],
       ['Present', () => A.Present.start()], ['Download', () => EU.downloadDialog()], ['Share', () => EU.shareDialog()], ['Resize', () => EU.resizeDialog()], ['Version history', () => EU.historyDialog()],
       ['Toggle rulers', () => { E.showRulers = !E.showRulers; E.drawOverlay(); }], ['Toggle snapping', () => E.toggleSnap()], ['Zoom to fit', () => { E.fit(); E.renderAll(); }], ['Keyboard shortcuts', () => A.Home.shortcuts()],

@@ -432,6 +432,10 @@
       ['Arrow keys', 'Nudge 1px'], ['Shift + arrows', 'Nudge 10px'], ['Ctrl/⌘ + drag', 'Move or resize without snapping'], ['Enter', 'Edit selected text'], ['Delete', 'Delete selection'], ['Esc', 'Deselect / exit tool'],
       ['Ctrl/⌘ + + / − / 0', 'Zoom in / out / fit'], ['Shift + 0 / 1 / 2', 'Zoom to 100% / fit page / selection'], ['Ctrl/⌘ + wheel, pinch', 'Zoom at the pointer'],
       ['Space + drag, middle-drag', 'Pan the canvas'], ['Arrow keys, nothing selected', 'Scroll the canvas (change page in presentations)'], ['Ctrl/⌘ + Enter', 'Present (presentations)'], ['In present mode: ← → Space', 'Change page'], ['P / F', 'Presenter view / full screen'],
+      ['Ctrl/⌘ + ] / [', 'Bring forward / send backward'], ['Shift + Ctrl/⌘ + ] / [', 'Bring to front / send to back'], ['Shift + H / V', 'Flip horizontal / vertical'],
+      ['Shift + Ctrl/⌘ + L', 'Lock / unlock'], ['Shift + Ctrl/⌘ + H', 'Hide / show'], ['Ctrl/⌘ + Alt/Option + C / V', 'Copy / paste style'],
+      ['Alt/Option + A / H / D', 'Align left / centre / right'], ['Alt/Option + W / V / S', 'Align top / middle / bottom'], ['Shift + click', 'Add to selection, set the key object'],
+      ['Tab / Shift + Tab', 'Select the next / previous element'], ['Enter on a group', 'Select inside the group'], ['Esc or Shift + Enter in a group', 'Back to the whole group'],
     ];
     U.modal({ title: 'Keyboard shortcuts', wide: true, body: h('div.shortcuts', rows.map(([k, d]) => h('div.sc-row', h('kbd', k), h('span', d)))) });
   };
