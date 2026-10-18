@@ -91,7 +91,7 @@
     const texts = E.els().filter((e) => e.type === 'text' || (e.type === 'shape' && e.text));
     if (!texts.length) return U.toast('No text on this page yet');
     const max = Math.max(...texts.map((e) => e.size));
-    texts.forEach((e) => { e.font = e.size >= max * 0.6 ? hf : bf; if (e.type === 'text') e.h = R.textHeight(e); });
+    texts.forEach((e) => { e.font = e.size >= max * 0.6 ? hf : bf; if (e.type === 'text') R.fitText(e); });
     E.changed();
   }
 
@@ -452,6 +452,8 @@
       if (!st || !(st.type === 'text' || (st.type === 'shape' && st.text))) return U.toast('Select a text box to rewrite it');
       if (!E.canEdit()) return;
       const t = await A.AI.rewrite(st.text, how);
+      // an edit session on it would keep the old text in its text box and write that back on the next key
+      if (E.d && E.editingId === st.id) E.finishText();
       const x = E.d?.pages.find((p) => p.id === pid)?.elements.find((e) => e.id === st.id);
       if (!x) return;
       x.text = t;
@@ -526,7 +528,7 @@
             delete p.id;
             delete p.type;
             Object.assign(el, p);
-            if (el.type === 'text') el.h = R.textHeight(el);
+            if (el.type === 'text') R.fitText(el);
           }
         }
         if (op.op === 'delete') E.page().elements = E.els().filter((e) => e.id !== op.id);
@@ -550,14 +552,18 @@
       if (els.length > 2) body.append(section('Space evenly', h('div.arr-grid', btn('split', 'Horizontally', () => E.distribute('h')), btn('spacing', 'Vertically', () => E.distribute('v')))));
       if (els.length === 1) {
         const el = els[0];
+        const shown = (key) => U.round(key === 'rot' ? el.rot || 0 : el[key], 1);
+        const fields = [];
         const field = (label, key, fn) => {
-          const inp = h('input.input', { type: 'number', value: U.round(key === 'rot' ? el.rot || 0 : el[key], 1) });
-          inp.addEventListener('change', () => { fn(+inp.value); E.changed(); });
+          const inp = h('input.input', { type: 'number', value: shown(key) });
+          // the panel isn't rebuilt while it is in use, so the other fields (Height after Width) are updated here
+          inp.addEventListener('change', () => { fn(+inp.value); E.changed(); fields.forEach(([k, x]) => x !== inp && (x.value = shown(k))); });
+          fields.push([key, inp]);
           return h('label.field.half', h('span', label), inp);
         };
         const ratio = el.h / el.w;
         const lock = h('input', { type: 'checkbox', checked: ['image', 'icon', 'emoji'].includes(el.type) });
-        const wF = field('Width', 'w', (v) => { const old = el.w; el.w = Math.max(1, v); if (lock.checked) el.h = el.w * ratio; if (el.type === 'text') { el.size = U.round(el.size * (el.w / old), 1); el.h = R.textHeight(el); } });
+        const wF = field('Width', 'w', (v) => { const old = el.w; el.w = Math.max(1, v); if (lock.checked) el.h = el.w * ratio; if (el.type === 'text') { el.size = U.round(el.size * (el.w / old), 1); R.fitText(el); } });
         const hF = field('Height', 'h', (v) => { el.h = Math.max(1, v); if (lock.checked) el.w = el.h / ratio; });
         body.append(section('Advanced', el.type === 'line' ? h('p.muted.small', 'Drag the line ends to reshape it. Hold Shift for 45° angles.') : h('div.adv-grid', wF, hF, field('X', 'x', (v) => (el.x = v)), field('Y', 'y', (v) => (el.y = v)), field('Rotate °', 'rot', (v) => (el.rot = v))), el.type !== 'line' ? h('label.check', lock, ' Lock aspect ratio') : null));
       }
@@ -631,15 +637,15 @@
     const playBtn = h('button.btn.full', { onclick: () => A.Present.preview() }, U.ic('play', 16), ' Play preview');
     if (mode === 'element' && el) {
       const a = el.anim || {}, page = E.page();
-      // with no delay of its own, an element in a page animation waits for its layer's turn (as R.anim does)
-      const turn = (!a.in || a.in === 'none') && page.anim && page.anim !== 'none' ? Math.min(Math.max(0, E.els().filter((x) => !x.hidden).indexOf(el)) * 0.12, Math.max(0, (page.duration || 5) - 0.7 / (a.speed || 1) - 0.2)) : 0;
+      // the delay it really waits: with none of its own, an element in a page animation waits for its layer's turn
+      const delay = R.animDelay(el, Math.max(0, E.els().filter((x) => !x.hidden).indexOf(el)), page.duration || 5, page);
       const set = (patch) => { EU.apply((x) => (x.anim = { ...(x.anim || {}), ...patch })); EU.renderPanel(); };
       const grid = (list, key) => h('div.anim-grid', list.map(([id, name]) => h('button.anim-item' + ((a[key] || 'none') === id ? '.on' : ''), { onclick: () => { set({ [key]: id }); if (id !== 'none') A.Present.preview(); } }, name)));
       body.append(section('Enter', grid(M.ANIM_IN.filter(([id]) => id !== 'typewriter' || el.type === 'text' || el.text), 'in')));
-      if (a.in && a.in !== 'none' && ['rise', 'pan', 'drift'].includes(a.in)) body.append(h('div.seg', ['up', 'down', 'left', 'right'].map((d) => h('button.seg-btn' + ((a.dir || 'up') === d ? '.on' : ''), { onclick: () => set({ dir: d }) }, d))));
+      if (a.in && a.in !== 'none' && ['rise', 'pan', 'drift'].includes(a.in)) body.append(h('div.seg', ['up', 'down', 'left', 'right'].map((d) => h('button.seg-btn' + ((a.dir || (a.in === 'pan' ? 'right' : 'up')) === d ? '.on' : ''), { onclick: () => set({ dir: d }) }, d))));
       body.append(section('Emphasis (loops)', grid(M.ANIM_EMPH, 'emph')));
       body.append(section('Exit', grid(M.ANIM_OUT, 'out')));
-      body.append(section('Timing', EU.slider('Speed', a.speed || 1, 0.25, 3, 0.25, (v, f) => EU.apply((x) => (x.anim = { ...(x.anim || {}), speed: v }), f), (v) => v + '×'), EU.slider('Delay (s)', a.delay ?? U.round(turn, 2), 0, 10, 0.1, (v, f) => EU.apply((x) => (x.anim = { ...(x.anim || {}), delay: v }), f))));
+      body.append(section('Timing', EU.slider('Speed', a.speed || 1, 0.25, 3, 0.25, (v, f) => EU.apply((x) => (x.anim = { ...(x.anim || {}), speed: v }), f), (v) => v + '×'), EU.slider('Delay (s)', U.round(delay, 2), 0, 10, 0.1, (v, f) => EU.apply((x) => (x.anim = { ...(x.anim || {}), delay: v }), f))));
       body.append(section('Create an animation', h('p.muted.small', 'Record a motion path: click the button, then drag the element along the route.'), h('div.row', h('button.btn', { onclick: () => E.startMotion() }, U.ic('animate', 16), ' Record motion'), a.motion ? h('button.btn', { onclick: () => set({ motion: null }) }, 'Clear path') : null)));
     } else {
       const page = E.page();
@@ -716,13 +722,16 @@
     const el = sel1();
     if (!el || el.type !== 'image') return { title: 'Crop', body: h('p.muted', 'Select a photo to crop it.') };
     const c = el.crop || { x: 0, y: 0, w: 1, h: 1 };
-    const natural = el.nw / el.nh;
     const setRatio = (r) => {
-      // r = width/height of the frame; keep the crop centred
-      let cw = 1, ch = 1;
-      if (r) { if (r > natural) ch = natural / r; else cw = r / natural; }
-      else { cw = 1; ch = 1; }
-      EU.apply((x) => { x.crop = { x: (1 - cw) / 2, y: (1 - ch) / 2, w: cw, h: ch }; x.h = x.w * ((ch * x.nh) / (cw * x.nw)); });
+      // r = width/height of the frame; keep the crop centred (each photo from its own natural size)
+      EU.apply((x) => {
+        if (x.type !== 'image') return;
+        const natural = x.nw / x.nh;
+        let cw = 1, ch = 1;
+        if (r) { if (r > natural) ch = natural / r; else cw = r / natural; }
+        x.crop = { x: (1 - cw) / 2, y: (1 - ch) / 2, w: cw, h: ch };
+        x.h = x.w * ((ch * x.nh) / (cw * x.nw));
+      });
       EU.renderPanel();
     };
     const ratios = [['Original', null], ['1:1', 1], ['4:3', 4 / 3], ['3:4', 3 / 4], ['16:9', 16 / 9], ['9:16', 9 / 16], ['3:2', 3 / 2]];
@@ -732,14 +741,15 @@
       section('Aspect ratio', h('div.chip-row', ratios.map(([l, r]) => h('button.chip', { onclick: () => setRatio(r) }, l)))),
       section('Zoom & position',
         EU.slider('Zoom', zoom, 100, 400, 1, (v, f) => EU.apply((x) => {
+          if (x.type !== 'image') return;
           const k = 100 / v, aspect = x.crop.w / x.crop.h;
           let w = Math.min(1, k * (aspect >= 1 ? 1 : aspect)), hh = w / aspect;
           if (hh > 1) { hh = 1; w = aspect; }
           const cx = x.crop.x + x.crop.w / 2, cy = x.crop.y + x.crop.h / 2;
           x.crop = { w, h: hh, x: U.clamp(cx - w / 2, 0, 1 - w), y: U.clamp(cy - hh / 2, 0, 1 - hh) };
         }, f), (v) => v + '%'),
-        EU.slider('Horizontal', Math.round(c.w >= 1 ? 50 : (c.x / (1 - c.w)) * 100), 0, 100, 1, (v, f) => EU.apply((x) => (x.crop = { ...x.crop, x: (1 - x.crop.w) * (v / 100) }), f)),
-        EU.slider('Vertical', Math.round(c.h >= 1 ? 50 : (c.y / (1 - c.h)) * 100), 0, 100, 1, (v, f) => EU.apply((x) => (x.crop = { ...x.crop, y: (1 - x.crop.h) * (v / 100) }), f))
+        EU.slider('Horizontal', Math.round(c.w >= 1 ? 50 : (c.x / (1 - c.w)) * 100), 0, 100, 1, (v, f) => EU.apply((x) => x.type === 'image' && (x.crop = { ...x.crop, x: (1 - x.crop.w) * (v / 100) }), f)),
+        EU.slider('Vertical', Math.round(c.h >= 1 ? 50 : (c.y / (1 - c.h)) * 100), 0, 100, 1, (v, f) => EU.apply((x) => x.type === 'image' && (x.crop = { ...x.crop, y: (1 - x.crop.h) * (v / 100) }), f))
       ),
       section('Rotate & flip', h('div.row', h('button.btn', { onclick: () => EU.apply((x) => (x.rot = ((x.rot || 0) + 90) % 360)) }, 'Rotate 90°'), h('button.btn', { onclick: () => E.flip('h') }, 'Flip H'), h('button.btn', { onclick: () => E.flip('v') }, 'Flip V'))),
       h('button.btn.full', { onclick: () => { setRatio(null); } }, 'Reset crop')
@@ -780,12 +790,14 @@
     grid.append(h('span'));
     for (let c = 0; c < cols; c++) grid.append(h('span.tbl-h', R.colName(c)));
     const inputs = [];
+    // one memo per pass evaluates each formula once
+    const memo = new Map();
     for (let r = 0; r < rows; r++) {
       grid.append(h('span.tbl-h', String(r + 1)));
       for (let c = 0; c < cols; c++) {
-        const inp = h('input.tbl-cell', { value: el.cells[r][c], title: R.evalCell(el.cells, r, c) });
+        const inp = h('input.tbl-cell', { value: el.cells[r][c], title: R.evalCell(el.cells, r, c, memo) });
         // update in place: re-rendering the grid would drop the focus Tab is moving to the next cell
-        inp.addEventListener('change', () => { el.cells[r][c] = inp.value; E.changed({ toolbar: false }); inputs.forEach((x, k) => (x.title = R.evalCell(el.cells, Math.floor(k / cols), k % cols))); });
+        inp.addEventListener('change', () => { el.cells[r][c] = inp.value; E.changed({ toolbar: false }); const m = new Map(); inputs.forEach((x, k) => (x.title = R.evalCell(el.cells, Math.floor(k / cols), k % cols, m))); });
         inputs.push(inp);
         grid.append(inp);
       }

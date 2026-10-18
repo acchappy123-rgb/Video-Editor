@@ -93,7 +93,7 @@
     EU.refreshBottom();
     if (EU.titleInput && document.activeElement !== EU.titleInput) EU.titleInput.value = E.d.title;
     // a closed panel stays closed (re-running the Draw panel would switch the pen back on)
-    if (EU.panel && EU.panelOpen && EU.panelEl.isConnected) EU.renderPanel();
+    if (EU.panel && EU.panelOpen && EU.panelEl.isConnected) showPanel();
   };
   EU.saveState = (s) => {
     if (!EU.saveIcon) return;
@@ -128,6 +128,8 @@
     EU.panelArg = arg;
     EU.panelOpen = true;
     document.body.classList.add('panel-open');
+    // reopening Animate starts from its argument or the selection, not the tab picked last time
+    if (id === 'animate') A.P.state.animTab = null;
     EU.renderPanel();
   };
   EU.closePanel = () => {
@@ -147,26 +149,28 @@
     EU.panelEl.appendChild(h('div.panel-body', body));
   };
   EU.refreshPanel = () => {
-    if (EU.panelOpen && ['position', 'animate', 'effects', 'imageEdit', 'chart', 'table', 'comments', 'crop'].includes(EU.panel)) EU.renderPanel();
+    if (EU.panelOpen && ['position', 'animate', 'effects', 'imageEdit', 'chart', 'table', 'comments', 'crop'].includes(EU.panel)) showPanel();
   };
   EU.onSelectionChange = () => {
-    const ctx = ['position', 'animate', 'effects', 'imageEdit', 'chart', 'table', 'crop'];
-    if (EU.panelOpen && ctx.includes(EU.panel)) {
-      const els = E.selEls();
-      const fits = { effects: (x) => x.type === 'text', imageEdit: (x) => x.type === 'image' || x.asset, crop: (x) => x.type === 'image', chart: (x) => x.type === 'chart', table: (x) => x.type === 'table' }[EU.panel];
-      // typed panels edit every selected element, so all must fit; crop, chart and table data are per element
-      const ok = !fits || (els.length > 0 && els.every(fits) && (els.length === 1 || ['effects', 'imageEdit'].includes(EU.panel)));
-      if (ok) EU.renderPanel();
-      else EU.openPanel('elements');
-    }
+    if (EU.panelOpen && ['position', 'animate', 'effects', 'imageEdit', 'chart', 'table', 'crop'].includes(EU.panel)) showPanel();
   };
+  // A typed panel whose selection no longer fits (another click, an undo) gives way to Elements.
+  function showPanel() {
+    const els = E.selEls();
+    const fits = { effects: (x) => x.type === 'text', imageEdit: (x) => x.type === 'image' || x.asset, crop: (x) => x.type === 'image', chart: (x) => x.type === 'chart', table: (x) => x.type === 'table' }[EU.panel];
+    // typed panels edit every selected element, so all must fit; crop, chart and table data are per element
+    const ok = !fits || (els.length > 0 && els.every(fits) && (els.length === 1 || ['effects', 'imageEdit'].includes(EU.panel)));
+    if (ok) EU.renderPanel();
+    else EU.openPanel('elements');
+  }
   EU.onPageClick = () => {};
 
   // ---------- helpers used by toolbar & panels ----------
   const textLike = (el) => el.type === 'text' || (el.type === 'shape' && el.text);
   EU.apply = (fn, commit = true) => {
-    if (E.canEdit && !E.canEdit()) return;
-    for (const el of E.selEls()) {
+    const els = E.editEls();
+    if (!els.length) return;
+    for (const el of els) {
       fn(el);
       if (el.type === 'text') {
         if (el.curve) { const g = R.curveGeom(el); el.w = g.w; el.h = g.h; }
@@ -406,11 +410,19 @@
   }
   function borderBtn(el) {
     return EU.tbBtn('frame', 'Border', (e) => {
-      const styles = h('div.seg', ['none', 'solid', 'dashed', 'dotted'].map((s) => h('button.seg-btn' + ((s === 'none' ? !el.strokeWidth : el.strokeWidth && (el.dash || 'solid') === s) ? '.on' : ''), {
-        onclick: () => EU.apply((x) => { if (s === 'none') x.strokeWidth = 0; else { x.dash = s; if (!x.strokeWidth) x.strokeWidth = Math.max(2, Math.round(Math.min(x.w, x.h) / 40)); } }),
-      }, s[0].toUpperCase() + s.slice(1))));
-      const colorBtn = EU.swatchBtn(el.stroke || '#000', 'Border colour', (c, fin) => EU.apply((x) => (x.stroke = c), fin), { opts: { gradients: false } });
-      EU.sliderPopover(e.currentTarget, [h('label.mini-label', 'Border style'), styles, EU.slider('Border weight', el.strokeWidth || 0, 0, 60, 1, (v, f) => EU.apply((x) => (x.strokeWidth = v), f)), h('div.row', h('label.mini-label', 'Colour'), colorBtn)]);
+      // a style click rebuilds the rows, so the highlight and the weight show the new values
+      const rows = (el) => {
+        const styles = h('div.seg', ['none', 'solid', 'dashed', 'dotted'].map((s) => h('button.seg-btn' + ((s === 'none' ? !el.strokeWidth : el.strokeWidth && (el.dash || 'solid') === s) ? '.on' : ''), {
+          onclick: () => {
+            EU.apply((x) => { if (s === 'none') x.strokeWidth = 0; else { x.dash = s; if (!x.strokeWidth) x.strokeWidth = Math.max(2, Math.round(Math.min(x.w, x.h) / 40)); } });
+            const x = E.selEls()[0];
+            if (x) pop.firstChild.replaceChildren(...rows(x));
+          },
+        }, s[0].toUpperCase() + s.slice(1))));
+        const colorBtn = EU.swatchBtn(el.stroke || '#000', 'Border colour', (c, fin) => EU.apply((x) => (x.stroke = c), fin), { opts: { gradients: false } });
+        return [h('label.mini-label', 'Border style'), styles, EU.slider('Border weight', el.strokeWidth || 0, 0, 60, 1, (v, f) => EU.apply((x) => (x.strokeWidth = v), f)), h('div.row', h('label.mini-label', 'Colour'), colorBtn)];
+      };
+      const pop = EU.sliderPopover(e.currentTarget, rows(el));
     });
   }
   function radiusBtn(el, key) {
@@ -513,8 +525,8 @@
       { label: 'Save as template', icon: 'template', onClick: () => A.app.saveUserTemplate(E.d) },
       { divider: true },
       { label: 'Keyboard shortcuts', icon: 'help', shortcut: '', onClick: () => A.Home.shortcuts() },
-      // trash the open copy: closing the editor saves it again
-      { label: 'Move to trash', icon: 'trash', danger: true, onClick: async () => { if (await U.confirm('Move this design to the trash? It stays there for 30 days.', 'Move to trash', true)) { E.d.deletedAt = Date.now(); await E.save(); A.app.go('#/home'); } } },
+      // trash the open copy: closing the editor saves it again (its last version is taken first, so it is not a trashed copy)
+      { label: 'Move to trash', icon: 'trash', danger: true, onClick: async () => { if (await U.confirm('Move this design to the trash? It stays there for 30 days.', 'Move to trash', true)) { E.finishText(); E.flushCommit(); await E.snapshot(); E.d.deletedAt = Date.now(); await E.save(); A.app.go('#/home'); } } },
     ]);
   }
 
@@ -765,7 +777,7 @@
     const out = await A.AI.translate(strings, lang);
     items.forEach((it, i) => {
       if (it.cell) it.el.cells[it.cell[0]][it.cell[1]] = String(out[i]);
-      else { it.el.text = String(out[i]); if (it.el.type === 'text') it.el.h = R.textHeight(it.el); }
+      else { it.el.text = String(out[i]); if (it.el.type === 'text') R.fitText(it.el); }
     });
   };
 
@@ -785,8 +797,8 @@
           E.finishText();
           await E.snapshot('Before restoring');
           const restored = JSON.parse(v.data);
-          // only the content goes back: the name, star, folder and creation date stay as they are now
-          for (const key of ['id', 'title', 'starred', 'folderId', 'createdAt']) restored[key] = E.d[key];
+          // only the content goes back: the name, star, folder, creation date and trash state stay as they are now
+          for (const key of ['id', 'title', 'starred', 'folderId', 'createdAt', 'deletedAt']) restored[key] = E.d[key];
           E.d = restored;
           E.pi = 0; E.sel = [];
           await S.ensureAssetURLs(S.designAssetIds(E.d));
@@ -830,11 +842,18 @@
       handle.addEventListener('pointerdown', (e) => {
         e.stopPropagation();
         e.preventDefault();
+        // only the pointer that grabbed the grip resizes, and a cancelled gesture ends the drag
+        handle.setPointerCapture?.(e.pointerId);
         const x0 = e.clientX, d0 = p.duration || 5;
-        const mv = (ev) => { p.duration = U.clamp(U.round(d0 + (ev.clientX - x0) / PX, 1), 0.5, 600); block.style.width = Math.max(48, p.duration * PX) + 'px'; block.querySelector('.tl-dur').textContent = p.duration + 's'; };
-        const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); E.changed({ toolbar: false }); EU.refreshTimeline(); };
+        const mv = (ev) => { if (ev.pointerId !== e.pointerId) return; p.duration = U.clamp(U.round(d0 + (ev.clientX - x0) / PX, 1), 0.5, 600); block.style.width = Math.max(48, p.duration * PX) + 'px'; block.querySelector('.tl-dur').textContent = p.duration + 's'; };
+        const up = (ev) => {
+          if (ev.pointerId !== e.pointerId) return;
+          removeEventListener('pointermove', mv); removeEventListener('pointerup', up); removeEventListener('pointercancel', up);
+          E.changed({ toolbar: false }); EU.refreshTimeline();
+        };
         addEventListener('pointermove', mv);
         addEventListener('pointerup', up);
+        addEventListener('pointercancel', up);
       });
       track.append(block);
     });

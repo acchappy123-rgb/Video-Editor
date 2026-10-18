@@ -7,6 +7,7 @@
 import { createRequire } from 'module';
 import { execSync, spawn } from 'child_process';
 import fs from 'fs';
+import net from 'net';
 import path from 'path';
 const GP = process.env.GP || execSync('npm root -g').toString().trim();
 const require = createRequire(GP + '/');
@@ -15,11 +16,17 @@ const OUT = process.env.OUT || 'tests/out';
 fs.mkdirSync(OUT, { recursive: true });
 const PORT = +process.env.PORT || 8765;
 const url = `http://localhost:${PORT}/index.html`;
+const listening = () => new Promise((r) => { const s = net.connect(PORT, '127.0.0.1', () => { s.destroy(); r(true); }); s.on('error', () => r(false)); });
+// another server on the port (a leftover run, another checkout) would be tested instead of this app/
+if (await listening()) { console.log(`Port ${PORT} is already in use – stop that server or set PORT`); process.exit(1); }
 // Detached so the whole process group (npx + http-server) can be killed at the end.
 const srv = spawn('npx', ['--yes', 'http-server', 'app', '-p', String(PORT), '-c-1', '-s'], { stdio: 'ignore', detached: true });
 const stopServer = () => { try { process.kill(-srv.pid, 'SIGTERM'); } catch (e) {} };
 process.on('exit', stopServer);
-await new Promise((r) => setTimeout(r, 1500));
+for (let i = 0; !(await listening()); i++) {
+  if (i > 200) { console.log(`http-server did not start on port ${PORT}`); process.exit(1); }
+  await new Promise((r) => setTimeout(r, 100));
+}
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
 const modules = process.env.EXTRA

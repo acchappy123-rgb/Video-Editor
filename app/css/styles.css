@@ -79,9 +79,14 @@ input[type=range] { accent-color: var(--accent-2); width: 100%; }
 .toast.ok { background: #0f7a3e; }
 .toast.error { background: #b4232a; }
 .toast.out { opacity: 0; transform: translateY(8px); }
+.toast .toast-action { margin-left: 12px; background: rgba(255, 255, 255, .18); color: #fff; border-color: transparent; }
+.toast .toast-action:hover { background: rgba(255, 255, 255, .28); }
+.toast .toast-close { margin-left: 6px; color: #fff; vertical-align: middle; }
 .modal-back { position: fixed; inset: 0; background: rgba(10, 12, 20, .5); display: flex; align-items: center; justify-content: center; z-index: 3000; padding: 16px; }
 .modal { background: var(--surface); border-radius: 14px; width: min(520px, 100%); max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0, 0, 0, .3); }
 .modal.wide { width: min(860px, 100%); }
+/* U.modal focuses the dialog itself when it has no field */
+.modal:focus { outline: none; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 6px 20px; }
 .modal-head h2 { font-size: 18px; }
 .modal-body { padding: 8px 20px 16px; overflow: auto; }
@@ -242,7 +247,7 @@ input[type=range] { accent-color: var(--accent-2); width: 100%; }
 .title-input:hover, .title-input:focus { border-color: rgba(255, 255, 255, .5); outline: 0; background: rgba(255, 255, 255, .1); }
 .save-state { display: inline-flex; padding: 0 6px; opacity: .9; }
 .save-state.saving, .save-state.pending { animation: pulse 1s infinite; }
-.save-state.error { color: #ffd1d1; }
+.save-state.error { color: #fff; background: #e5383b; border-radius: 8px; opacity: 1; }
 @keyframes pulse { 50% { opacity: .4; } }
 .btn.share { background: #fff; color: var(--accent); border: 0; }
 .btn.share:hover { background: #f1eaff; }

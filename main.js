@@ -1,6 +1,6 @@
 'use strict';
 // Electron entry point for the desktop app (Windows, macOS, Linux).
-const { app, BrowserWindow, Menu, shell, session } = require('electron');
+const { app, BrowserWindow, Menu, dialog, shell, session } = require('electron');
 const path = require('path');
 
 const isMac = process.platform === 'darwin';
@@ -37,6 +37,11 @@ function createWindow() {
       e.preventDefault();
       if (/^https?:|^mailto:/i.test(url)) shell.openExternal(url);
     }
+  });
+  // The page cancels unload while a save is pending or failing; Electron shows no prompt of its own and would just keep the window open.
+  win.webContents.on('will-prevent-unload', (e) => {
+    const choice = dialog.showMessageBoxSync(win, { type: 'question', buttons: ['Leave', 'Stay'], defaultId: 1, cancelId: 1, message: 'Your latest changes may not be saved yet.', detail: 'Leave anyway, or stay a moment while Atelier finishes saving.' });
+    if (choice === 0) e.preventDefault();
   });
 }
 

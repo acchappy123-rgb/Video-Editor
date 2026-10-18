@@ -8,6 +8,9 @@
   const n = (v) => Math.round(v * 100) / 100;
   // def ids stay valid in id="…" and url(#…) whatever an element or page id holds
   const did = (ctx, tag, id) => (ctx.idp + tag + id).replace(/[^\w-]/g, '_');
+  // the characters a reader sees: a flag, a skin-toned or a ZWJ emoji is one (the typewriter steps by these)
+  const seg = Intl.Segmenter && new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const graphemes = (s) => (seg ? Array.from(seg.segment(s), (x) => x.segment) : [...s]);
 
   // ---------- shapes ----------
   const poly = (pts) => 'M' + pts.map((p) => n(p[0]) + ' ' + n(p[1])).join('L') + 'Z';
@@ -151,10 +154,10 @@
     const L = el.curve ? { lines: [] } : R.layoutText(el, box.w);
     let lines = L.lines;
     if (chars != null) {
-      // typewriter: count code points of the text only; a bullet or number appears with its line's first character
+      // typewriter: count the characters of the text only; a bullet or number appears with its line's first character
       let left = chars;
       lines = lines.map((l) => {
-        const cps = [...l.t], take = Math.max(0, Math.min(cps.length, left));
+        const cps = graphemes(l.t), take = Math.max(0, Math.min(cps.length, left));
         left -= cps.length;
         return { ...l, prefix: take ? l.prefix : '', t: cps.slice(0, take).join('') };
       });
@@ -249,7 +252,7 @@
       d = `M${n(cx)} ${n(cy - r)}A${n(r)} ${n(r)} 0 1 0 ${n(cx)} ${n(cy + r)}A${n(r)} ${n(r)} 0 1 0 ${n(cx)} ${n(cy - r)}`;
     }
     ctx.defs.push(`<path id="${pid}" d="${d}"/>`);
-    const t = chars != null ? [...g.txt].slice(0, chars).join('') : g.txt;
+    const t = chars != null ? graphemes(g.txt).slice(0, chars).join('') : g.txt;
     return `<textPath href="#${pid}" xlink:href="#${pid}" startOffset="50%">${esc(t)}</textPath>`;
   }
 
@@ -337,9 +340,10 @@
       };
       const range = (a, b) => {
         const [r1, c1] = cellAt(a), [r2, c2] = cellAt(b);
-        const out = [];
-        for (let rr = Math.min(r1, r2); rr <= Math.max(r1, r2); rr++)
-          for (let cc = Math.min(c1, c2); cc <= Math.max(c1, c2); cc++) {
+        // cells outside the table are empty, so a huge range costs no more than the table
+        const out = [], rMax = Math.min(Math.max(r1, r2), cells.length - 1), cMax = Math.min(Math.max(c1, c2), Math.max(0, ...cells.map((row) => row.length)) - 1);
+        for (let rr = Math.min(r1, r2); rr <= rMax; rr++)
+          for (let cc = Math.min(c1, c2); cc <= cMax; cc++) {
             const v = val(rr, cc);
             if (!isNaN(v)) out.push(v);
           }
@@ -397,6 +401,13 @@
     return a * (p -= 2.625 / b) * p + 0.984375;
   };
   const DIRS = { up: [0, 1], down: [0, -1], left: [1, 0], right: [-1, 0] };
+  // The entrance delay, as the Animate panel shows it: only a page animation staggers by (visible) layer,
+  // and the stagger ends within the page (a presented slide with no exit time still uses the page's duration).
+  R.animDelay = (el, idx, dur, page) => {
+    const a = el.anim || {}, own = a.in && a.in !== 'none';
+    const kind = own ? a.in : page?.anim && page.anim !== 'none' ? page.anim : null;
+    return a.delay ?? (kind && !own ? Math.min(idx * 0.12, Math.max(0, (dur || page?.duration || 5) - 0.7 / (a.speed || 1) - 0.2)) : 0);
+  };
   R.anim = (el, t, dur, idx, page) => {
     const st = { dx: 0, dy: 0, s: 1, sx: 1, r: 0, o: 1, chars: null };
     if (t == null) return st;
@@ -405,11 +416,10 @@
     const kind = own ? a.in : page && page.anim && page.anim !== 'none' ? page.anim : null;
     const sp = a.speed || 1;
     const D = 0.7 / sp;
-    // the delay is the one the Animate panel shows; only a page animation staggers by layer, and it ends within the page
-    const delay = a.delay ?? (kind && !own ? Math.min(idx * 0.12, Math.max(0, (dur || 5) - D - 0.2)) : 0);
+    const delay = R.animDelay(el, idx, dur, page);
     const [vx, vy] = DIRS[a.dir] || DIRS[kind === 'pan' ? 'right' : 'up'];
     if (kind) {
-      const len = [...String(el.text || '').replace(/\n/g, '')].length;
+      const len = graphemes(String(el.text || '').replace(/\n/g, '')).length;
       const DD = kind === 'typewriter' ? Math.max(0.4, len * 0.05) / sp : kind === 'drift' ? D * 2 : D;
       const p = U.clamp((t - delay) / DD, 0, 1), e = easeOut(p);
       switch (kind) {
@@ -610,7 +620,7 @@
     return out;
   }
 
-  function drawInner(el) {
+  function drawInner(el, ctx) {
     const pts = el.pts || [];
     if (pts.length < 2) return '';
     const P = (i) => [pts[i][0] * el.w, pts[i][1] * el.h];
@@ -622,7 +632,7 @@
     const L = P(pts.length - 1);
     d += `L${n(L[0])} ${n(L[1])}`;
     const hl = el.pen === 'highlighter';
-    return `<path d="${d}" fill="none" stroke="transparent" stroke-width="${Math.max(14, el.strokeWidth + 10)}"/><path d="${d}" fill="none" stroke="${esc(el.stroke)}" stroke-width="${n(el.strokeWidth)}" stroke-linecap="${hl ? 'square' : 'round'}" stroke-linejoin="round" opacity="${hl ? 0.45 : 1}"/>`;
+    return `<path d="${d}" fill="none" stroke="transparent" stroke-width="${n(Math.max(ctx.hit || 14, el.strokeWidth + 10))}"/><path d="${d}" fill="none" stroke="${esc(el.stroke)}" stroke-width="${n(el.strokeWidth)}" stroke-linecap="${hl ? 'square' : 'round'}" stroke-linejoin="round" opacity="${hl ? 0.45 : 1}"/>`;
   }
 
   R.elementSVG = (el, ctx, idx = 0) => {
@@ -636,7 +646,7 @@
       case 'image': inner = imageInner(el, ctx); break;
       case 'chart': inner = chartInner(el, ctx); break;
       case 'table': inner = tableInner(el, ctx); break;
-      case 'draw': inner = drawInner(el); break;
+      case 'draw': inner = drawInner(el, ctx); break;
       case 'icon': inner = `<g transform="scale(${n(el.w / 24)} ${n(el.h / 24)})"><path d="${M.ICONS[el.icon] || ''}" fill="${R.paint(el.fill, ctx, el.id)}"/></g>`; break;
       case 'emoji': inner = `<text x="${n(el.w / 2)}" y="${n(el.h * 0.86)}" font-size="${n(el.h * 0.92)}" text-anchor="middle" font-family="'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif">${esc(el.text)}</text>`; break;
     }
@@ -658,7 +668,7 @@
     const link = ctx.links && el.link && /^(https?:|mailto:|tel:|#)/i.test(el.link.trim()) ? el.link.trim() : '';
     const g = `<g data-id="${esc(el.id)}" transform="${tr}"${op < 1 ? ` opacity="${n(op)}"` : ''}${filt}>${inner}</g>`;
     // '#3' links go to a page of the same document
-    return link ? `<a href="${esc(link)}"${link.startsWith('#') ? '' : ' target="_blank"'}>${g}</a>` : g;
+    return link ? `<a href="${esc(link)}"${/^#\d+$/.test(link) ? '' : ' target="_blank"'}>${g}</a>` : g;
   };
 
   R.backgroundSVG = (design, page, ctx) => {
@@ -678,7 +688,7 @@
   let seq = 0;
   // opts: { t, dur, asset, idp, transparent, links, fontCSS, width, height, skip:Set, hit }
   // dur defaults to the page duration; null plays no exit animations (a slide that stays up until the presenter moves on).
-  // hit: minimum width of a line's invisible hit stroke, in page units (the editor keeps it a fixed size on screen).
+  // hit: minimum width of a line's or drawing's invisible hit stroke, in page units (the editor keeps it a fixed size on screen).
   R.pageParts = (design, page, opts = {}) => {
     const ctx = { asset: opts.asset || ((id) => A.S.assetURL(id)), idp: opts.idp || 'r' + (seq++).toString(36) + '_', t: opts.t, dur: opts.dur !== undefined ? opts.dur : page.duration || 5, page, defs: [], transparent: opts.transparent, links: opts.links, hit: opts.hit };
     const bg = R.backgroundSVG(design, page, ctx);

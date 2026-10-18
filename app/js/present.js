@@ -89,7 +89,8 @@
     if (opts.fullscreen !== false && !presenter) toggleFS();
 
     let layer = null;
-    const svgFor = (page, t, idp, links = true) => R.pageSVG(d, page, { t, idp, links, width: d.width });
+    // a slide moved on by hand stays up as long as the presenter likes, so its exit animations don't play
+    const svgFor = (page, t, idp, links = true) => R.pageSVG(d, page, { t, idp, links, width: d.width, dur: autoplay ? undefined : null });
     const mount = (dir) => {
       const page = pages[idx];
       const nl = h('div.pr-layer', { html: svgFor(page, 0, 'pr' + idx + '_') });
@@ -122,8 +123,9 @@
       if (a) {
         const href = a.getAttribute('href') || '';
         const m = href.match(/^#(\d+)$/);
-        // '#N' is the design's page N, hidden pages included
-        if (m) { e.preventDefault(); const j = pages.indexOf(d.pages[+m[1] - 1]); if (j >= 0) go(j); }
+        // '#N' is the design's page N, hidden pages included; another '#' link would drive the app's router
+        if (href.startsWith('#')) e.preventDefault();
+        if (m) { const j = pages.indexOf(d.pages[+m[1] - 1]); if (j >= 0) go(j); }
         return;
       }
       go(idx + 1);
@@ -203,7 +205,7 @@
       const draw = async () => {
         while (running) {
           const t = (performance.now() - t0) / 1000;
-          const svg = R.pageSVG(d, pages[idx], { t, asset: (id) => map[id] || '', fontCSS, idp: 'rc' });
+          const svg = R.pageSVG(d, pages[idx], { t, asset: (id) => map[id] || '', fontCSS, idp: 'rc', dur: autoplay ? undefined : null });
           try { await R.pageCanvas(d, pages[idx], scale, { svg, canvas, matte: '#fff' }); } catch (e) {}
           if (cam.videoWidth) {
             const s = canvas.height * 0.26, x = canvas.width - s - 20, y = canvas.height - s - 20;

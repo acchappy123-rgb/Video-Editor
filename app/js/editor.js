@@ -83,7 +83,8 @@
     A.EU.saveState('pending');
     E.saveNow();
   };
-  const saveKey = () => E.save().then((ok) => (ok ? U.toast('Saved', 'ok') : U.toast('Could not save – storage may be full', 'error')));
+  // a failed save already shows the sticky warning (EU.saveState), unless it was closed
+  const saveKey = () => E.save().then((ok) => (ok ? U.toast('Saved', 'ok') : !A.EU.saveErr?.isConnected && U.toast('Could not save – storage may be full', 'error')));
   E.snapshot = async (label = '') => {
     if (!E.d || (!E.dirtySinceVersion && !label)) return;
     E.dirtySinceVersion = false;
@@ -91,21 +92,25 @@
   };
 
   // ---------- history ----------
-  let commitT = 0;
+  let commitT = 0, burst = null;
   E.pushHistory = () => {
     clearTimeout(commitT);
     commitT = 0;
-    const s = snap();
-    if (s === E.hist[E.hi]) return;
-    E.hist = E.hist.slice(0, E.hi + 1);
-    E.hist.push(s);
-    if (E.hist.length > 120) E.hist.shift();
-    E.hi = E.hist.length - 1;
+    // a pending burst is its own step, before the change that cut it short
+    for (const s of [burst, snap()]) {
+      if (!s || s === E.hist[E.hi]) continue;
+      E.hist = E.hist.slice(0, E.hi + 1);
+      E.hist.push(s);
+      if (E.hist.length > 120) E.hist.shift();
+      E.hi = E.hist.length - 1;
+    }
+    burst = null;
     A.EU.refreshUndo();
   };
   // A burst of changes (arrow-key nudges) becomes one undo step once it goes quiet.
   E.commitSoon = () => {
     clearTimeout(commitT);
+    burst = snap();
     commitT = setTimeout(E.pushHistory, 400);
   };
   E.flushCommit = () => commitT && E.pushHistory();
@@ -120,7 +125,9 @@
       E.pi = i;
       const was = prev.find((p) => p.id === pages[i].id);
       const old = new Map(was?.elements.map((el) => [el.id, JSON.stringify(el)]));
-      E.sel = was ? pages[i].elements.filter((el) => old.get(el.id) !== JSON.stringify(el)).map((el) => el.id) : [];
+      const changed = was ? pages[i].elements.filter((el) => old.get(el.id) !== JSON.stringify(el)).map((el) => el.id) : [];
+      // a page-only change (layer order, background) keeps the selection
+      E.sel = changed.length ? changed : E.sel.filter((id) => pages[i].elements.some((el) => el.id === id));
     } else {
       E.pi = Math.min(E.pi, pages.length - 1);
       E.sel = E.sel.filter((id) => E.byId(id));
@@ -154,8 +161,11 @@
     E.drawOverlay();
     if (toolbar) {
       A.EU.refreshToolbar();
-      // contextual panels show the new values, unless the change came from the panel being used
-      if (!A.EU.panelEl?.contains(document.activeElement)) A.EU.refreshPanel?.();
+      // contextual panels show the new values, unless the change came from the panel being used or a field there
+      // is being typed into (a field's 'change' on Tab or click-away fires once focus has already left it);
+      // a shortcut pressed while a panel checkbox or button has focus is a canvas edit
+      const ev = window.event, src = ev?.type !== 'keydown' && ev?.target, panel = A.EU.panelEl, ae = document.activeElement;
+      if (!(typingIn(ae) && panel?.contains(ae)) && !(src instanceof Node && panel?.contains(src))) A.EU.refreshPanel?.();
     }
     if (commit) E.pushHistory();
     E.scheduleSave();
@@ -233,7 +243,8 @@
     const page = E.d.pages[i];
     const W = E.d.width, H = E.d.height, z = E.zoom;
     const t = opts.t ?? (i === E.pi ? E.previewT : null);
-    const parts = R.pageParts(E.d, page, { idp: 'p' + i + '_', t, skip: E.editingId ? new Set([E.editingId]) : null });
+    // lines and drawings stay as easy to hit at any zoom (a finger needs more room)
+    const parts = R.pageParts(E.d, page, { idp: 'p' + i + '_', t, skip: E.editingId ? new Set([E.editingId]) : null, hit: (coarse.matches ? 36 : 16) / z });
     b.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     b.svg.setAttribute('width', W * z);
     b.svg.setAttribute('height', H * z);
@@ -244,6 +255,7 @@
   };
 
   // ---------- zoom ----------
+  const coarse = matchMedia('(pointer: coarse)');
   // Re-render at zoom z; `place` scrolls before the overlay is drawn, so the mini-menu is placed for the final view.
   const zoomTo = (z, place) => {
     E.zoom = z;
@@ -253,6 +265,9 @@
     A.EU.refreshZoom();
   };
   // `anchor` keeps a page point in place on screen: true = the viewport centre, or a client {x, y} (cursor, pinch midpoint).
+  // The scroll an anchored zoom asked for is kept: the browser rounds it, and a gesture zooming every frame
+  // would otherwise let the anchored point drift by that rounding on each step.
+  let want = null;
   E.setZoom = (z, anchor = true) => {
     z = U.clamp(z, 0.05, 8);
     const wrap = E.scrollEl;
@@ -260,18 +275,22 @@
     if (wrap && anchor) {
       const sr = wrap.getBoundingClientRect();
       const x = anchor.x ?? sr.left + wrap.clientWidth / 2, y = anchor.y ?? sr.top + wrap.clientHeight / 2;
+      const held = want && performance.now() - want.t < 150 && Math.abs(wrap.scrollLeft - want.left) < 1 && Math.abs(wrap.scrollTop - want.top) < 1;
+      const dx = held ? wrap.scrollLeft - want.left : 0, dy = held ? wrap.scrollTop - want.top : 0;
       // page padding, heads and gaps don't scale, so measure against the page block nearest to the anchor
       let best = Infinity;
       for (const k in E.blocks) {
-        const r = E.blocks[k].svg.getBoundingClientRect();
-        const dist = Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
-        if (dist < best) { best = dist; a = { b: E.blocks[k], x, y, px: (x - r.left) / E.zoom, py: (y - r.top) / E.zoom }; }
+        const r = E.blocks[k].svg.getBoundingClientRect(), left = r.left + dx, top = r.top + dy;
+        const dist = Math.hypot(Math.max(left - x, 0, x - left - r.width), Math.max(top - y, 0, y - top - r.height));
+        if (dist < best) { best = dist; a = { b: E.blocks[k], x, y, px: (x - left) / E.zoom, py: (y - top) / E.zoom }; }
       }
     }
     zoomTo(z, a && (() => {
       const r = a.b.svg.getBoundingClientRect();
-      wrap.scrollLeft += r.left + a.px * z - a.x;
-      wrap.scrollTop += r.top + a.py * z - a.y;
+      const left = wrap.scrollLeft + r.left + a.px * z - a.x, top = wrap.scrollTop + r.top + a.py * z - a.y;
+      wrap.scrollLeft = left;
+      wrap.scrollTop = top;
+      want = { left, top, t: performance.now() };
     }));
   };
   E.fit = () => {
@@ -397,6 +416,7 @@
   };
   E.select = (ids, add = false) => {
     commitField();
+    E.flushCommit();
     E.sel = add ? [...new Set([...E.sel, ...ids])] : ids;
     if (E.editingId && !E.sel.includes(E.editingId)) E.finishText();
     E.drawOverlay();
@@ -586,11 +606,16 @@
     }
     const el = id && E.byId(id);
     if (E.tool === 'motion') {
-      if (el) return recordMotion(e, el);
+      if (el && !el.locked && E.canEdit()) return recordMotion(e, el);
       E.tool = null;
       A.EU.refreshTool();
     }
     if (!el) {
+      // empty space inside a selected group's box drags the group (no member's box covers it);
+      // inside an ad-hoc multi-selection it deselects and starts a marquee as anywhere else
+      const sel = E.selEls(), grp = sel.length > 1 && sel.every((x) => x.groupId && x.groupId === sel[0].groupId);
+      const box = !e.shiftKey && grp && E.unionBox(sel), p = box && E.toPage(e, i);
+      if (p && p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h) return startMove(e, i);
       if (!e.shiftKey) E.deselect();
       A.EU.onPageClick?.();
       return startMarquee(e, i);
@@ -864,9 +889,11 @@
   }
 
   const PROPORTIONAL = new Set(['image', 'icon', 'emoji', 'text']);
+  // handles preventDefault their pointerdown, so a typed panel value is committed here, before the drag starts from it
   function startResize(e, h) {
     e.stopPropagation();
     e.preventDefault();
+    commitField();
     const els = E.selEls();
     const single = els.length === 1 ? els[0] : null;
     const hx = h.includes('e') ? 1 : h.includes('w') ? -1 : 0;
@@ -969,6 +996,7 @@
   function startRotate(e) {
     e.stopPropagation();
     e.preventDefault();
+    commitField();
     const el = E.selEls()[0];
     if (!el) return;
     const r = E.blocks[E.pi].svg.getBoundingClientRect();
@@ -1000,6 +1028,7 @@
   function startLineEnd(e, el, k) {
     e.stopPropagation();
     e.preventDefault();
+    commitField();
     if (el.locked) return;
     E.dragging = true;
     const ck = k === 'p1' ? 'c1' : 'c2';
@@ -1119,16 +1148,16 @@
   }
   E.startMotion = () => {
     if (!E.selEls()[0]) return U.toast('Select an element first');
+    if (!E.editEls().length) return;
     E.tool = 'motion';
     A.EU.refreshTool();
     U.toast('Drag the element along the path you want it to follow');
   };
 
   // ---------- text editing ----------
-  const fitText = (el) => {
-    if (el.curve) { const g = R.curveGeom(el); el.w = g.w; el.h = g.h; }
-    else el.h = R.textHeight(el);
-  };
+  const fitText = R.fitText;
+  // a Word-style line break (\v) or page break (\f) starts a new line; other control characters are dropped
+  const cleanText = (t) => t.replace(/\r\n?|[\v\f\u2028\u2029]/g, '\n').replace(/[\0-\x08\x0e-\x1f]/g, '');
   E.editText = (el) => {
     if (el.locked || !E.canEdit()) return;
     if (E.editingId) E.finishText();
@@ -1175,7 +1204,9 @@
     };
     style();
     ta.addEventListener('input', () => {
-      el.text = ta.value;
+      const t = cleanText(ta.value);
+      if (t !== ta.value) { const at = Math.max(0, ta.selectionEnd - (ta.value.length - t.length)); ta.value = t; ta.setSelectionRange(at, at); }
+      el.text = t;
       if (el.type === 'text') fitText(el);
       E.drawOverlay();
       E.scheduleSave();
@@ -1260,6 +1291,16 @@
     if (Date.now() - lockHintT > 2500) U.toast('This page is locked – unlock it to edit');
     lockHintT = Date.now();
     return false;
+  };
+  // The selected elements an edit may change: none on a locked page and never a locked one (with a hint).
+  E.editEls = () => {
+    if (!E.canEdit()) return [];
+    const els = E.selEls(), free = els.filter((e) => !e.locked);
+    if (els.length && !free.length) {
+      if (Date.now() - lockHintT > 2500) U.toast('Unlock the element to edit it');
+      lockHintT = Date.now();
+    }
+    return free;
   };
   E.add = (els, { center = true, edit = false } = {}) => {
     if (!E.d || !E.canEdit()) return false;
@@ -1366,8 +1407,10 @@
     U.toast('Style copied');
   };
   E.pasteStyle = () => {
-    if (!E.styleClip || !E.canEdit()) return;
-    for (const el of E.selEls()) {
+    if (!E.styleClip) return;
+    const els = E.editEls();
+    if (!els.length) return;
+    for (const el of els) {
       for (const k in E.styleClip) {
         if (['adj', 'duo'].includes(k) && el.type !== 'image') continue;
         if (['font', 'size', 'color', 'bold', 'italic', 'align', 'effect', 'lh', 'spacing', 'upper', 'underline', 'strike'].includes(k) && !(el.type === 'text' || (el.type === 'shape' && el.text))) continue;
@@ -1381,14 +1424,15 @@
   E.selectAll = () => E.select(E.els().filter((e) => !e.hidden).map((e) => e.id));
   E.group = () => {
     const els = E.selEls();
-    if (els.length < 2 || !E.canEdit()) return;
+    if (els.length < 2 || E.editEls().length < els.length) return;
     const g = U.uid('g_');
     els.forEach((e) => (e.groupId = g));
     E.changed();
   };
   E.ungroup = () => {
-    if (!E.canEdit()) return;
-    E.selEls().forEach((e) => delete e.groupId);
+    const els = E.editEls();
+    if (!els.length) return;
+    els.forEach((e) => delete e.groupId);
     E.enteredGroup = null;
     E.changed();
   };
@@ -1417,9 +1461,9 @@
     E.commitSoon();
   };
   E.order = (how) => {
-    if (!E.canEdit()) return;
+    const ids = new Set(E.editEls().map((e) => e.id));
+    if (!ids.size) return;
     const list = E.els();
-    const ids = new Set(E.sel);
     const sel = list.filter((e) => ids.has(e.id)), rest = list.filter((e) => !ids.has(e.id));
     if (how === 'front') E.page().elements = [...rest, ...sel];
     else if (how === 'back') E.page().elements = [...sel, ...rest];
@@ -1471,15 +1515,16 @@
   };
   E.setBackgroundFromImage = () => {
     const el = E.selEls()[0];
-    if (!el || el.type !== 'image' || !E.canEdit()) return;
+    if (!el || el.type !== 'image' || !E.editEls().includes(el)) return;
     E.page().bg ={ ...(E.page().bg || {}), asset: el.asset, adj: el.adj };
     E.page().elements = E.els().filter((e) => e !== el);
     E.sel = [];
     E.changed();
   };
   E.flip = (axis) => {
-    if (!E.canEdit()) return;
-    for (const el of E.selEls()) {
+    const els = E.editEls();
+    if (!els.length) return;
+    for (const el of els) {
       if (axis === 'h') el.flipX = !el.flipX;
       else el.flipY = !el.flipY;
     }
@@ -1538,7 +1583,7 @@
       // Ctrl+C / Ctrl+X go on to the browser's copy/cut event (E.onCopyEvent), which marks the system clipboard;
       // copying here too covers browsers that fire no copy event without a text selection (Safari)
       else if (k === 'c') E.copy();
-      else if (k === 'x' && E.copy()) { const ids = E.sel.join(); setTimeout(() => E.sel.join() === ids && E.deleteSel()); }
+      else if (k === 'x' && E.copy()) { const ids = E.sel.join(); cutSeen = false; setTimeout(() => !cutSeen && E.sel.join() === ids && E.deleteSel()); }
       else if (k === 'b' || k === 'i' || k === 'u') {
         const els = E.selEls().filter((x) => !x.locked && (x.type === 'text' || (x.type === 'shape' && x.text)));
         if (els.length) {
@@ -1585,13 +1630,14 @@
     if (k === 's' && E.isWB()) return E.add(M.newSticky());
     if (k === 'p' && e.altKey) return A.Present.start();
   };
+  let cutSeen = false;
   E.onCopyEvent = (e) => {
     if (A.app.view !== 'editor' || !E.d) return;
     E.clipFresh = false;
     if (typingIn(document.activeElement) || document.querySelector('.modal-back') || !E.copy(true)) return;
     e.clipboardData.setData('text/plain', 'atelier-elements');
     e.preventDefault();
-    if (e.type === 'cut') E.deleteSel();
+    if (e.type === 'cut') { cutSeen = true; E.deleteSel(); }
   };
   E.onPaste = async (e) => {
     if (A.app.view !== 'editor' || !E.d) return;
@@ -1607,7 +1653,7 @@
     // the marker without elements to go with it (another window, or after a reload) pastes nothing
     if (text && text !== 'atelier-elements') {
       if (E.styleClip && false) return;
-      const el = M.newText({ text: text.slice(0, 5000), w: E.d.width * 0.6, size: Math.max(12, Math.round(E.d.width / 30)) });
+      const el = M.newText({ text: cleanText(text).slice(0, 5000), w: E.d.width * 0.6, size: Math.max(12, Math.round(E.d.width / 30)) });
       el.h = R.textHeight(el);
       E.add(el);
     }
