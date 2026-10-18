@@ -518,6 +518,7 @@
       { header: d.title + ' · ' + d.width + ' × ' + d.height + ' px' },
       { label: 'Create new design', icon: 'plus', onClick: () => A.Home.createMenu(anchor) },
       { label: E.showRulers ? 'Hide rulers' : 'Show rulers', icon: 'custom', shortcut: '', onClick: () => { E.showRulers = !E.showRulers; E.drawOverlay(); } },
+      { label: E.snapOn() ? 'Turn off snapping' : 'Turn on snapping', icon: 'magnet', onClick: () => E.toggleSnap() },
       { label: 'Add guide…', icon: 'grid', onClick: async () => { const v = await U.prompt('Guide position, e.g. "x 540" or "y 300"', 'x ' + Math.round(d.width / 2)); const m = v && v.match(/([xy])\s*(-?\d+)/i); if (m) { d.guides.push({ axis: m[1].toLowerCase(), pos: +m[2] }); E.changed({ toolbar: false }); } } },
       { label: 'Clear guides', icon: 'x', onClick: () => { d.guides = []; E.changed({ toolbar: false }); }, disabled: !d.guides.length },
       { divider: true },
@@ -595,7 +596,7 @@
       ['Add page', () => E.addPage(E.pi + 1)], ['Duplicate page', () => E.duplicatePage(E.pi)],
       ['Draw', () => EU.openPanel('draw')], ['Upload files', () => EU.openPanel('uploads')], ['Templates', () => EU.openPanel('design')], ['Brand kit', () => EU.openPanel('brand')], ['AI tools', () => EU.openPanel('ai')], ['Apps', () => EU.openPanel('apps')],
       ['Present', () => A.Present.start()], ['Download', () => EU.downloadDialog()], ['Share', () => EU.shareDialog()], ['Resize', () => EU.resizeDialog()], ['Version history', () => EU.historyDialog()],
-      ['Toggle rulers', () => { E.showRulers = !E.showRulers; E.drawOverlay(); }], ['Zoom to fit', () => { E.fit(); E.renderAll(); }], ['Keyboard shortcuts', () => A.Home.shortcuts()],
+      ['Toggle rulers', () => { E.showRulers = !E.showRulers; E.drawOverlay(); }], ['Toggle snapping', () => E.toggleSnap()], ['Zoom to fit', () => { E.fit(); E.renderAll(); }], ['Keyboard shortcuts', () => A.Home.shortcuts()],
     ];
     const inp = h('input.input', { placeholder: 'Search tools and actions…' });
     const list = h('div.qm-list');
@@ -901,9 +902,11 @@
     EU.zoomLabel = h('button.zoom-label', { title: 'Zoom to fit', onclick: () => { E.fit(); E.renderAll(); } }, Math.round(E.zoom * 100) + '%');
     EU.zoomRange = zoomIn;
     EU.pageInfo = h('button.page-info', { title: 'Page grid view', onclick: () => gridView() });
+    const snap = E.snapOn();
     b.append(...[
       E.d.type === 'presentation' ? h('button.btn.sm.ghost', { onclick: () => notesEditor() }, U.ic('doc', 14), ' Notes') : null,
       h('div.flex1'),
+      h('button.icon-btn.sm.snap-btn' + (snap ? '.on' : ''), { title: snap ? 'Snapping is on – click to turn it off' : 'Snapping is off – click to turn it on', 'aria-pressed': String(snap), onclick: () => E.toggleSnap() }, U.ic('magnet', 16)),
       h('button.icon-btn.sm', { title: 'Zoom out', onclick: () => E.setZoom(E.zoom / 1.2) }, U.ic('zoomout', 16)),
       zoomIn,
       h('button.icon-btn.sm', { title: 'Zoom in', onclick: () => E.setZoom(E.zoom * 1.2) }, U.ic('zoomin', 16)),

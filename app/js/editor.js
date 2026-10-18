@@ -435,12 +435,13 @@
       drawCommentPins(b, +k);
     }
     keepTextArea();
+    // the Position panel's fields follow drags, nudges and undo
+    A.EU.syncPosition?.();
     const b = E.blocks[E.pi];
     if (!b) return;
     E.hoverBox = U.h('div.hover-box');
     b.overlay.appendChild(E.hoverBox);
     const els = E.selEls();
-    if (!els.length || E.editingId === null && false) return;
     if (!els.length) return;
     const z = E.zoom;
     const locked = els.some((e) => e.locked) || E.page().locked;
@@ -459,18 +460,19 @@
     }
     const single = els.length === 1 ? els[0] : null;
     const isGroup = !single && els.every((e) => e.groupId && e.groupId === els[0].groupId);
-    const box = single ? { x: single.x, y: single.y, w: single.w, h: single.h } : E.unionBox(els);
-    const rot = single ? single.rot || 0 : 0;
+    // several elements being rotated show the box they started in, turned with them
+    const turn = !single && E.dragging && E.rotFrame;
+    const box = single ? { x: single.x, y: single.y, w: single.w, h: single.h } : turn ? turn.box : E.unionBox(els);
+    const rot = single ? single.rot || 0 : turn ? turn.deg : 0;
     const sb = U.h('div.sel-box' + (isGroup ? '.group' : '') + (locked ? '.locked' : ''), {
       style: { left: box.x * z + 'px', top: box.y * z + 'px', width: box.w * z + 'px', height: box.h * z + 'px', transform: `rotate(${rot}deg)` },
     });
     if (!single) for (const e of els) { const bb = E.bbox(e); b.overlay.appendChild(U.h('div.sel-member', { style: { left: bb.x * z + 'px', top: bb.y * z + 'px', width: bb.w * z + 'px', height: bb.h * z + 'px' } })); }
     if (!locked && E.editingId == null) {
       const t = single?.type;
-      const corners = !(t === 'text' && single.curve) ? ['nw', 'ne', 'sw', 'se'] : ['nw', 'ne', 'sw', 'se'];
+      const corners = ['nw', 'ne', 'sw', 'se'];
       let sides = ['n', 's', 'e', 'w'];
-      if (!single) sides = [];
-      else if (t === 'text') sides = single.curve ? [] : ['e', 'w'];
+      if (t === 'text') sides = single.curve ? [] : ['e', 'w'];
       else if (t === 'emoji') sides = [];
       // text only has width handles, so a short line keeps them (shortened to clear the corner dots)
       const short = box.h * z < 40, small = box.w * z < 40 || (short && t !== 'text');
@@ -480,16 +482,14 @@
         hd.addEventListener('pointerdown', (e) => startResize(e, h));
         sb.appendChild(hd);
       }
-      if (single) {
-        const rh = U.h('div.rot-handle', { title: 'Rotate' }, U.ic('restore', 14));
-        rh.addEventListener('pointerdown', startRotate);
-        const mh = U.h('div.move-handle', { title: 'Move' }, U.ic('fullscreen', 14));
-        mh.addEventListener('pointerdown', (e) => {
-          e.stopPropagation();
-          startMove(e, E.pi);
-        });
-        sb.appendChild(U.h('div.rot-wrap', rh, mh));
-      }
+      const rh = U.h('div.rot-handle', { title: 'Rotate' }, U.ic('restore', 14));
+      rh.addEventListener('pointerdown', startRotate);
+      const mh = U.h('div.move-handle', { title: 'Move' }, U.ic('fullscreen', 14));
+      mh.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        startMove(e, E.pi);
+      });
+      sb.appendChild(U.h('div.rot-wrap', rh, mh));
     }
     b.overlay.appendChild(sb);
     miniMenu(b, E.unionBox(els), locked);
@@ -662,7 +662,7 @@
       removeEventListener('pointerup', up);
       removeEventListener('pointercancel', up);
       E.dragging = false;
-      active = null;
+      E.rotFrame = active = null;
     };
     const move = (ev) => ev.pointerId === id && E.d === d && onMove(ev);
     const up = (ev) => {
@@ -770,13 +770,9 @@
           orig = els.map((el) => ({ el, x: el.x, y: el.y, p1: el.p1 && { ...el.p1 }, p2: el.p2 && { ...el.p2 } }));
         }
         let mx = dx, my = dy;
-        const guides = [];
-        if (!ev.ctrlKey && !ev.metaKey) {
-          const snap = smartSnap({ x: box0.x + dx, y: box0.y + dy, w: box0.w, h: box0.h }, new Set(E.sel));
-          mx += snap.dx;
-          my += snap.dy;
-          guides.push(...snap.guides);
-        }
+        const snap = !ev.ctrlKey && !ev.metaKey ? smartSnap({ x: box0.x + dx, y: box0.y + dy, w: box0.w, h: box0.h }, snapSkip(E.sel), { spacing: true }) : noSnap();
+        mx += snap.dx;
+        my += snap.dy;
         for (const o of orig) {
           o.el.x = o.x + mx;
           o.el.y = o.y + my;
@@ -788,7 +784,7 @@
         }
         E.renderPage(E.pi);
         E.drawOverlay();
-        showGuides(guides, { x: box0.x + mx, y: box0.y + my, w: box0.w, h: box0.h });
+        showGuides(snap, { x: box0.x + mx, y: box0.y + my, w: box0.w, h: box0.h });
       },
       () => {
         if (!started) return;
@@ -806,40 +802,102 @@
     if (grew) U.toast('Whiteboard extended');
   }
 
-  // Snap a moving box to page edges/centre, other elements and user guides.
-  function smartSnap(box, exclude) {
+  // Snapping (to page edges and centre, other elements, guides and equal spacing) is an app setting; Ctrl/Cmd skips it for one drag.
+  E.snapOn = () => A.app.settings.snap !== false;
+  E.toggleSnap = () => {
+    A.app.settings.snap = !E.snapOn();
+    A.app.saveSettings();
+    A.EU.refreshBottom?.();
+    U.toast(E.snapOn() ? 'Snapping on' : 'Snapping off');
+  };
+  const noSnap = () => ({ x: null, y: null, dx: 0, dy: 0, guides: [], gaps: [] });
+  // what a drag doesn't snap to: the elements it moves and the connectors that follow them
+  const snapSkip = (ids) => new Set([...ids, ...E.els().filter((x) => ids.includes(x.c1) || ids.includes(x.c2)).map((x) => x.id)]);
+  // Snap a moving box to page edges/centre, other elements and user guides. `edges` lists the box edges that move, per
+  // axis, as { v: page position, k: how far the edge moves per unit of change, dim } (default: a moved box's sides and
+  // centre); `spacing` also matches the gaps between neighbours. Gives the best match per axis ({ d, v, k, dim, b }).
+  function smartSnap(box, exclude, { edges, spacing = false } = {}) {
+    const res = noSnap();
+    if (!E.snapOn()) return res;
     const th = 6 / E.zoom;
     const W = E.d.width, H = E.d.height;
     const xs = [{ v: 0 }, { v: W / 2, c: 1 }, { v: W }], ys = [{ v: 0 }, { v: H / 2, c: 1 }, { v: H }];
     for (const g of E.d.guides || []) (g.axis === 'x' ? xs : ys).push({ v: g.pos });
+    const others = [];
     for (const el of E.els()) {
       if (exclude.has(el.id) || el.hidden) continue;
       const b = E.bbox(el);
+      others.push(b);
       xs.push({ v: b.x, b }, { v: b.x + b.w / 2, b }, { v: b.x + b.w, b });
       ys.push({ v: b.y, b }, { v: b.y + b.h / 2, b }, { v: b.y + b.h, b });
     }
-    const best = (cands, edges) => {
+    const side = (p, s) => [box[p], box[p] + box[s] / 2, box[p] + box[s]].map((v) => ({ v, k: 1 }));
+    edges = edges || { x: side('x', 'w'), y: side('y', 'h') };
+    const best = (cands, es) => {
       let r = null;
       for (const c of cands)
-        for (const e of edges) {
-          const d = c.v - e;
-          if (Math.abs(d) <= th && (!r || Math.abs(d) < Math.abs(r.d))) r = { d, v: c.v, b: c.b };
+        for (const e of es) {
+          const d = c.v - e.v;
+          if (Math.abs(d) <= th && (!r || Math.abs(d) < Math.abs(r.d))) r = { d, v: c.v, b: c.b, k: e.k, dim: e.dim };
         }
       return r;
     };
-    const bx = best(xs, [box.x, box.x + box.w / 2, box.x + box.w]);
-    const by = best(ys, [box.y, box.y + box.h / 2, box.y + box.h]);
-    const guides = [];
-    if (bx) guides.push({ axis: 'x', v: bx.v, b: bx.b });
-    if (by) guides.push({ axis: 'y', v: by.v, b: by.b });
-    return { dx: bx ? bx.d : 0, dy: by ? by.d : 0, guides };
+    for (const a of ['x', 'y']) {
+      let m = best(a === 'x' ? xs : ys, edges[a] || []);
+      const g = spacing && spaced(a, box, others, th);
+      if (g && (!m || Math.abs(g.d) < Math.abs(m.d))) m = g;
+      if (!m) continue;
+      res[a] = m;
+      res['d' + a] = m.d;
+      if (m.gaps) res.gaps.push(...m.gaps);
+      else res.guides.push({ axis: a, v: m.v, b: m.b });
+    }
+    return res;
   }
-  function showGuides(guides, box) {
+  // Equal spacing along axis `a`: the moving box's gap to its nearest neighbour in the same row (or column) matches a
+  // gap between two other neighbours there, or the box sits midway between its two neighbours.
+  function spaced(a, box, others, th) {
+    const [p, s, q, t] = a === 'x' ? ['x', 'w', 'y', 'h'] : ['y', 'h', 'x', 'w'];
+    const end = (b) => b[p] + b[s];
+    const row = others.filter((b) => b[q] < box[q] + box[t] && b[q] + b[t] > box[q]);
+    // the element starting first after b ends (an element spanning the row, like a background, has none)
+    const after = (b, from = end(b)) => row.reduce((n, o) => (o[p] >= from && (!n || o[p] < n[p]) ? o : n), null);
+    let prev = null;
+    for (const b of row) if (end(b) <= box[p] + th && (!prev || end(b) > end(prev))) prev = b;
+    const next = after(box, end(box) - th);
+    const cands = [];
+    for (const m of row) {
+      const n = after(m), g = n && n[p] - end(m);
+      // a gap the box is in doesn't count
+      if (!n || g < 0.5 || (end(m) < end(box) && n[p] > box[p])) continue;
+      if (prev) cands.push({ v: end(prev) + g, gaps: [[m, n], [prev, null]] });
+      if (next) cands.push({ v: next[p] - g - box[s], gaps: [[m, n], [null, next]] });
+    }
+    if (prev && next && next[p] - end(prev) > box[s]) cands.push({ v: (end(prev) + next[p] - box[s]) / 2, gaps: [[prev, null], [null, next]] });
+    let r = null;
+    for (const c of cands) {
+      const d = c.v - box[p];
+      if (Math.abs(d) <= th && (!r || Math.abs(d) < Math.abs(r.d))) r = { d, k: 1, gaps: c.gaps.map(([m, n]) => ({ axis: a, a: m, b: n })) };
+    }
+    return r;
+  }
+  // Draws a snap's guides and equal-gap badges for the moved box.
+  function showGuides({ guides, gaps = [] }, box) {
     const b = E.blocks[E.pi];
     const z = E.zoom;
+    for (const g of gaps) {
+      // null stands for the moved box
+      const [p, s, q, t] = g.axis === 'x' ? ['x', 'w', 'y', 'h'] : ['y', 'h', 'x', 'w'];
+      const m = g.a || box, n = g.b || box, from = m[p] + m[s], to = n[p];
+      const lo = Math.max(m[q], n[q]), hi = Math.min(m[q] + m[t], n[q] + n[t]), mid = lo < hi ? (lo + hi) / 2 : (m[q] + m[t] / 2 + n[q] + n[t] / 2) / 2;
+      const at = (u, v) => (g.axis === 'x' ? { left: u * z + 'px', top: v * z + 'px' } : { left: v * z + 'px', top: u * z + 'px' });
+      b.overlay.appendChild(U.h('div.gap-line.' + g.axis, { style: { ...at(from, mid), [g.axis === 'x' ? 'width' : 'height']: (to - from) * z + 'px' } }));
+      b.overlay.appendChild(U.h('div.gap-label.eq', { style: at((from + to) / 2, mid) }, String(Math.round(to - from))));
+    }
     for (const g of guides) {
       b.overlay.appendChild(U.h('div.snap-guide.' + g.axis, { style: g.axis === 'x' ? { left: g.v * z + 'px' } : { top: g.v * z + 'px' } }));
-      if (g.b) {
+      // an equal-spacing badge already shows the gap across this guide
+      if (g.b && !gaps.some((q) => q.axis !== g.axis)) {
         // spacing label between the moving box and the aligned element
         if (g.axis === 'x') {
           const gap = box.y > g.b.y + g.b.h ? box.y - (g.b.y + g.b.h) : g.b.y - (box.y + box.h);
@@ -889,6 +947,8 @@
   }
 
   const PROPORTIONAL = new Set(['image', 'icon', 'emoji', 'text']);
+  // Resizes snap the sides that move (Ctrl/Cmd: not this time) and Alt/Option resizes from the centre.
+  // Several elements scale as one box: corners keep its proportions unless Shift is held, sides stretch it.
   // handles preventDefault their pointerdown, so a typed panel value is committed here, before the drag starts from it
   function startResize(e, h) {
     e.stopPropagation();
@@ -899,29 +959,63 @@
     const hx = h.includes('e') ? 1 : h.includes('w') ? -1 : 0;
     const hy = h.includes('s') ? 1 : h.includes('n') ? -1 : 0;
     const corner = hx && hy;
+    const sx = e.clientX, sy = e.clientY;
+    // the snaps for the moving sides: with proportions kept, the nearer one wins and the other side follows
+    const snapSides = (ev, box, edges, exclude, keep) => {
+      if (ev.ctrlKey || ev.metaKey) return [];
+      const sn = smartSnap(box, exclude, { edges });
+      let ms = [['x', sn.x], ['y', sn.y]].filter(([, m]) => m);
+      if (keep && ms.length > 1) ms = [Math.abs(sn.x.d) <= Math.abs(sn.y.d) ? ms[0] : ms[1]];
+      return ms.map(([axis, m]) => ({ ...m, axis }));
+    };
     E.dragging = true;
     if (single) {
       const el = single;
       const o = U.clone(el);
       const th = ((el.rot || 0) * Math.PI) / 180, cos = Math.cos(th), sin = Math.sin(th);
       const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
-      // the opposite side stays put; text width handles also keep its top edge (the height follows the wrap)
-      const vy = hy || (el.type === 'text' ? 1 : 0);
-      const ax = cx + cos * (-hx * o.w / 2) - sin * (-vy * o.h / 2);
-      const ay = cy + sin * (-hx * o.w / 2) + cos * (-vy * o.h / 2);
-      const sx = e.clientX, sy = e.clientY;
+      // at a right angle the sides lie along the page axes and can snap; curved text sizes itself
+      const square = Math.abs(Math.sin(2 * th)) < 1e-9 && !(el.type === 'text' && el.curve);
+      const onPage = (ux, uy) => (Math.abs(ux) > 0.5 ? ['x', Math.round(ux)] : ['y', Math.round(uy)]);
       session(
         e,
         (ev) => {
           const dx = (ev.clientX - sx) / E.zoom, dy = (ev.clientY - sy) / E.zoom;
           const lx = cos * dx + sin * dy, ly = -sin * dx + cos * dy;
-          let nw = hx ? Math.max(8, o.w + hx * lx) : o.w;
-          let nh = hy ? Math.max(8, o.h + hy * ly) : o.h;
+          // the opposite side stays put (Alt/Option: the centre); text width handles also keep its top edge (the height follows the wrap)
+          const alt = ev.altKey, f = alt ? 2 : 1;
+          const mx = alt ? 0 : hx, my = alt && hy ? 0 : hy || (el.type === 'text' ? 1 : 0);
+          const ax = cx - cos * (mx * o.w / 2) + sin * (my * o.h / 2);
+          const ay = cy - sin * (mx * o.w / 2) - cos * (my * o.h / 2);
+          const centre = (w, hh) => ({ x: ax + cos * (mx * w / 2) - sin * (my * hh / 2), y: ay + sin * (mx * w / 2) + cos * (my * hh / 2) });
+          let nw = hx ? Math.max(8, o.w + f * hx * lx) : o.w;
+          let nh = hy ? Math.max(8, o.h + f * hy * ly) : o.h;
           const prop = corner && (PROPORTIONAL.has(el.type) || ev.shiftKey || el.sticky) && !(ev.shiftKey && PROPORTIONAL.has(el.type));
           if (prop) {
             const k = Math.max(nw / o.w, nh / o.h);
             nw = o.w * k;
             nh = o.h * k;
+          }
+          let snaps = [];
+          if (square) {
+            const c = centre(nw, nh), edges = { x: [], y: [] };
+            const side = (dim, hd, n, [a, s]) => {
+              edges[a].push({ v: c[a] + hd * s * n / 2, k: hd * s / f, dim });
+              if (alt) edges[a].push({ v: c[a] - hd * s * n / 2, k: -hd * s / 2, dim });
+            };
+            if (hx) side('w', hx, nw, onPage(cos, sin));
+            // a text box's height follows its text
+            if (hy && el.type !== 'text') side('h', hy, nh, onPage(-sin, cos));
+            snaps = snapSides(ev, E.bbox({ ...el, x: c.x - nw / 2, y: c.y - nh / 2, w: nw, h: nh }), edges, snapSkip([el.id]), prop);
+            for (const m of snaps) {
+              if (m.dim === 'w') nw = Math.max(8, nw + m.d / m.k);
+              else nh = Math.max(8, nh + m.d / m.k);
+            }
+            if (prop && snaps.length) {
+              const k = snaps[0].dim === 'w' ? nw / o.w : nh / o.h;
+              nw = o.w * k;
+              nh = o.h * k;
+            }
           }
           if (el.type === 'image' && !corner) {
             // side handles crop the image (a flipped picture is cropped on its mirrored side)
@@ -946,63 +1040,139 @@
           }
           if (el.type === 'shape' && el.text && corner && prop) el.size = Math.max(4, U.round(o.size * (nw / o.w), 1));
           if (el.type === 'table' && corner) el.size = Math.max(6, U.round(o.size * Math.min(nw / o.w, nh / o.h), 1));
-          const ncx = ax + cos * (hx * nw / 2) - sin * (vy * nh / 2);
-          const ncy = ay + sin * (hx * nw / 2) + cos * (vy * nh / 2);
+          const nc = centre(nw, nh);
           el.w = nw;
           el.h = nh;
-          el.x = ncx - nw / 2;
-          el.y = ncy - nh / 2;
+          el.x = nc.x - nw / 2;
+          el.y = nc.y - nh / 2;
           E.renderPage(E.pi);
           E.drawOverlay();
-          sizeLabel(el);
+          const bb = E.bbox(el);
+          showGuides({ guides: snaps }, bb);
+          sizeLabel(bb, `w ${Math.round(el.w)}  h ${Math.round(el.h)}`);
         },
         () => E.changed()
       );
     } else {
       const box = E.unionBox(els);
-      const ax = hx === 1 ? box.x : box.x + box.w, ay = hy === 1 ? box.y : box.y + box.h;
-      const orig = els.map((el) => U.clone(el));
-      const sx = e.clientX, sy = e.clientY;
+      // a side the selection has no extent along (lines in a row) doesn't scale
+      const fx = (w) => (box.w >= 1 ? w / box.w : 1), fy = (hh) => (box.h >= 1 ? hh / box.h : 1);
+      let orig = null;
       session(
         e,
         (ev) => {
+          // connectors scale from where they are drawn
+          if (!orig) {
+            els.forEach((x) => E.bakeEnds(x));
+            orig = els.map((x) => U.clone(x));
+          }
           const dx = (ev.clientX - sx) / E.zoom, dy = (ev.clientY - sy) / E.zoom;
-          const k = Math.max(0.05, Math.max((box.w + hx * dx) / box.w, (box.h + hy * dy) / box.h));
-          els.forEach((el, i) => {
-            const o = orig[i];
-            el.x = ax + (o.x - ax) * k;
-            el.y = ay + (o.y - ay) * k;
-            el.w = o.w * k;
-            el.h = o.h * k;
-            if (o.size) el.size = U.round(o.size * k, 1);
-            if (o.strokeWidth && el.type !== 'line') el.strokeWidth = o.strokeWidth * k;
-            if (o.p1) {
-              el.p1 = { x: ax + (o.p1.x - ax) * k, y: ay + (o.p1.y - ay) * k };
-              el.p2 = { x: ax + (o.p2.x - ax) * k, y: ay + (o.p2.y - ay) * k };
-            }
-          });
+          const alt = ev.altKey, f = alt ? 2 : 1;
+          const ax = alt ? box.x + box.w / 2 : hx === 1 ? box.x : box.x + box.w, ay = alt ? box.y + box.h / 2 : hy === 1 ? box.y : box.y + box.h;
+          let kx = hx ? fx(Math.max(1, box.w + f * hx * dx)) : 1, ky = hy ? fy(Math.max(1, box.h + f * hy * dy)) : 1;
+          const keep = corner && !ev.shiftKey;
+          if (keep) kx = ky = Math.max(box.w >= 1 ? kx : 0, box.h >= 1 ? ky : 0) || 1;
+          const edges = { x: [], y: [] };
+          const side = (a, dim, hd, n, an) => {
+            if (!hd) return;
+            if (alt) edges[a].push({ v: an + n / 2, k: 0.5, dim }, { v: an - n / 2, k: -0.5, dim });
+            else edges[a].push({ v: an + hd * n, k: hd, dim });
+          };
+          const nw = box.w * kx, nh = box.h * ky;
+          side('x', 'w', box.w >= 1 && hx, nw, ax);
+          side('y', 'h', box.h >= 1 && hy, nh, ay);
+          const nb = { x: alt ? ax - nw / 2 : hx === -1 ? ax - nw : box.x, y: alt ? ay - nh / 2 : hy === -1 ? ay - nh : box.y, w: nw, h: nh };
+          const snaps = snapSides(ev, nb, edges, snapSkip(E.sel), keep);
+          for (const m of snaps) {
+            if (m.dim === 'w') kx = fx(nw + m.d / m.k);
+            else ky = fy(nh + m.d / m.k);
+          }
+          if (keep && snaps.length) kx = ky = snaps[0].dim === 'w' ? kx : ky;
+          E.scaleEls(els, orig, ax, ay, Math.max(0.05, kx), Math.max(0.05, ky));
           E.renderPage(E.pi);
           E.drawOverlay();
+          const ub = E.unionBox(els);
+          showGuides({ guides: snaps }, ub);
+          sizeLabel(ub, `w ${Math.round(ub.w)}  h ${Math.round(ub.h)}`);
         },
         () => E.changed()
       );
     }
   }
-  function sizeLabel(el) {
+  function sizeLabel(bb, text, below = 40) {
     const b = E.blocks[E.pi], z = E.zoom;
-    const bb = E.bbox(el);
-    b.overlay.appendChild(U.h('div.size-label', { style: { left: (bb.x + bb.w / 2) * z + 'px', top: (bb.y + bb.h) * z + 40 + 'px' } }, `w ${Math.round(el.w)}  h ${Math.round(el.h)}`));
+    b.overlay.appendChild(U.h('div.size-label', { style: { left: (bb.x + bb.w / 2) * z + 'px', top: (bb.y + bb.h) * z + below + 'px' } }, text));
   }
+  // Scale elements from `orig` (their copies) about page point (ax, ay). Unequal factors stretch them: text keeps its
+  // font size and rewraps, photos, emoji and curved text keep their shape, and strokes keep their weight.
+  E.scaleEls = (els, orig, ax, ay, kx, ky) => {
+    const uni = Math.abs(kx - ky) < 1e-9;
+    els.forEach((el, i) => {
+      const o = orig[i];
+      if (o.p1) {
+        el.p1 = { x: ax + (o.p1.x - ax) * kx, y: ay + (o.p1.y - ay) * ky };
+        el.p2 = { x: ax + (o.p2.x - ax) * kx, y: ay + (o.p2.y - ay) * ky };
+        return M.syncLineBox(el);
+      }
+      const keep = uni || o.type === 'image' || o.type === 'emoji' || (o.type === 'text' && o.curve);
+      // a turned element stretches along its own sides (exactly so at right angles)
+      const t = ((o.rot || 0) * Math.PI) / 180, c = Math.abs(Math.cos(t)), s = Math.abs(Math.sin(t)), k = uni ? kx : Math.min(kx, ky);
+      el.w = Math.max(1, o.w * (keep ? k : Math.hypot(kx * c, ky * s)));
+      el.h = Math.max(1, o.h * (keep ? k : Math.hypot(kx * s, ky * c)));
+      if (keep && o.size) el.size = U.round(o.size * k, 1);
+      if (uni && o.strokeWidth) el.strokeWidth = o.strokeWidth * k;
+      const wrap = !keep && o.type === 'text';
+      if (wrap) el.h = R.textHeight(el);
+      // rewrapped text keeps its (scaled) top-left corner; everything else its centre
+      if (wrap && !o.rot) {
+        el.x = ax + (o.x - ax) * kx;
+        el.y = ay + (o.y - ay) * ky;
+      } else {
+        el.x = ax + (o.x + o.w / 2 - ax) * kx - el.w / 2;
+        el.y = ay + (o.y + o.h / 2 - ay) * ky - el.h / 2;
+      }
+    });
+  };
+  // Turn elements from `orig` (their copies) by `deg` about page point (px, py); a line turns by its ends.
+  E.rotateEls = (els, orig, px, py, deg) => {
+    const t = (deg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+    const turn = (p) => ({ x: px + (p.x - px) * c - (p.y - py) * s, y: py + (p.x - px) * s + (p.y - py) * c });
+    els.forEach((el, i) => {
+      const o = orig[i];
+      if (o.p1) {
+        el.p1 = turn(o.p1);
+        el.p2 = turn(o.p2);
+        return M.syncLineBox(el);
+      }
+      const m = turn({ x: o.x + o.w / 2, y: o.y + o.h / 2 });
+      el.x = m.x - o.w / 2;
+      el.y = m.y - o.h / 2;
+      el.rot = U.round(((((o.rot || 0) + deg) % 360) + 540) % 360 - 180, 1);
+    });
+  };
+  // Move elements, their line ends included.
+  E.moveEls = (els, dx, dy) => {
+    for (const el of els) {
+      el.x += dx;
+      el.y += dy;
+      if (el.p1) { el.p1.x += dx; el.p1.y += dy; el.p2.x += dx; el.p2.y += dy; }
+    }
+  };
+  // Several elements turn together about the centre of their box; their common angle (if they share one) is what snaps.
   function startRotate(e) {
     e.stopPropagation();
     e.preventDefault();
     commitField();
-    const el = E.selEls()[0];
-    if (!el) return;
+    const els = E.selEls();
+    if (!els.length) return;
+    const single = els.length === 1 ? els[0] : null;
+    const box = single || E.unionBox(els), px = box.x + box.w / 2, py = box.y + box.h / 2;
     const r = E.blocks[E.pi].svg.getBoundingClientRect();
-    const c = { x: r.left + (el.x + el.w / 2) * E.zoom, y: r.top + (el.y + el.h / 2) * E.zoom };
+    const c = { x: r.left + px * E.zoom, y: r.top + py * E.zoom };
     const a0 = Math.atan2(e.clientY - c.y, e.clientX - c.x);
-    const r0 = el.rot || 0;
+    const rots = els.filter((x) => x.type !== 'line').map((x) => x.rot || 0);
+    const r0 = rots.length && rots.every((v) => v === rots[0]) ? rots[0] : 0;
+    let orig = null;
     E.dragging = true;
     session(
       e,
@@ -1012,11 +1182,19 @@
         deg = ((deg % 360) + 540) % 360 - 180;
         if (ev.shiftKey) deg = Math.round(deg / 15) * 15;
         else for (const s of [-180, -135, -90, -45, 0, 45, 90, 135, 180]) if (Math.abs(deg - s) < 3) deg = s;
-        el.rot = U.round(deg, 1);
+        if (single) single.rot = U.round(deg, 1);
+        else {
+          // connectors turn from where they are drawn
+          if (!orig) {
+            els.forEach((x) => E.bakeEnds(x));
+            orig = els.map((x) => U.clone(x));
+          }
+          E.rotateEls(els, orig, px, py, deg - r0);
+          E.rotFrame = { box, deg: deg - r0 };
+        }
         E.renderPage(E.pi);
         E.drawOverlay();
-        const b = E.blocks[E.pi], z = E.zoom;
-        b.overlay.appendChild(U.h('div.size-label', { style: { left: (el.x + el.w / 2) * z + 'px', top: (el.y + el.h) * z + 60 + 'px' } }, Math.round(deg) + '°'));
+        sizeLabel(single || box, Math.round(deg) + '°', 60);
       },
       () => E.changed()
     );
@@ -1452,11 +1630,7 @@
     if (!els.length || !E.canEdit()) return;
     // a lone connector leaves its shapes, as when dragged
     if (els.length === 1) E.bakeEnds(els[0], true);
-    for (const el of els) {
-      el.x += dx;
-      el.y += dy;
-      if (el.p1) { el.p1.x += dx; el.p1.y += dy; el.p2.x += dx; el.p2.y += dy; }
-    }
+    E.moveEls(els, dx, dy);
     E.changed({ commit: false });
     E.commitSoon();
   };
@@ -1489,8 +1663,7 @@
       if (how === 'top') dy = ref.y - b.y;
       if (how === 'middle') dy = ref.y + ref.h / 2 - (b.y + b.h / 2);
       if (how === 'bottom') dy = ref.y + ref.h - (b.y + b.h);
-      el.x += dx; el.y += dy;
-      if (el.p1) { el.p1.x += dx; el.p1.y += dy; el.p2.x += dx; el.p2.y += dy; }
+      E.moveEls([el], dx, dy);
     }
     E.changed();
   };

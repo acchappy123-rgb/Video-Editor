@@ -428,8 +428,8 @@
     const rows = [
       ['T', 'Add text box'], ['R', 'Add rectangle'], ['C', 'Add circle'], ['L', 'Add line'], ['S', 'Sticky note (whiteboards)'], ['/', 'Quick actions menu'],
       ['Ctrl/⌘ + D', 'Duplicate'], ['Ctrl/⌘ + G', 'Group'], ['Shift + Ctrl/⌘ + G', 'Ungroup'], ['Ctrl/⌘ + C / X / V', 'Copy / cut / paste'], ['Ctrl/⌘ + A', 'Select all'],
-      ['Ctrl/⌘ + Z / Y', 'Undo / redo'], ['Ctrl/⌘ + B / I / U', 'Bold / italic / underline'], ['Alt/Option + drag', 'Copy while dragging'], ['Shift + drag corner', 'Keep / free proportions'], ['Shift + rotate', 'Snap rotation to 15°'],
-      ['Arrow keys', 'Nudge 1px'], ['Shift + arrows', 'Nudge 10px'], ['Ctrl/⌘ + drag', 'Move without snapping'], ['Enter', 'Edit selected text'], ['Delete', 'Delete selection'], ['Esc', 'Deselect / exit tool'],
+      ['Ctrl/⌘ + Z / Y', 'Undo / redo'], ['Ctrl/⌘ + B / I / U', 'Bold / italic / underline'], ['Alt/Option + drag', 'Copy while dragging'], ['Shift + drag corner', 'Keep / free proportions'], ['Alt/Option + drag handle', 'Resize from the centre'], ['Shift + rotate', 'Snap rotation to 15°'],
+      ['Arrow keys', 'Nudge 1px'], ['Shift + arrows', 'Nudge 10px'], ['Ctrl/⌘ + drag', 'Move or resize without snapping'], ['Enter', 'Edit selected text'], ['Delete', 'Delete selection'], ['Esc', 'Deselect / exit tool'],
       ['Ctrl/⌘ + + / − / 0', 'Zoom in / out / fit'], ['Ctrl/⌘ + Enter', 'Present (presentations)'], ['In present mode: ← → Space', 'Change page'], ['P / F', 'Presenter view / full screen'],
     ];
     U.modal({ title: 'Keyboard shortcuts', wide: true, body: h('div.shortcuts', rows.map(([k, d]) => h('div.sc-row', h('kbd', k), h('span', d)))) });

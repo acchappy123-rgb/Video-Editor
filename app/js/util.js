@@ -256,6 +256,8 @@ window.A = window.A || {};
       });
       inp.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
+          // the dialog closes now, so the key must not go on to the editor's shortcuts (Enter edits the selected text)
+          e.stopPropagation();
           done = true;
           res(inp.value);
           m.close();
@@ -469,6 +471,7 @@ window.A = window.A || {};
     wand: 'M4 20L16 8M15 3v2M19 7h2M17.5 4.5l1.5-1.5M20 11v1M11 4h1',
     restore: 'M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5',
     history: 'M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 3',
+    magnet: 'M6 4h4v7a2 2 0 0 0 4 0V4h4v7a6 6 0 0 1-12 0zM6 8h4M14 8h4',
   };
   U.icon = (name, size = 20) =>
     `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${name === 'star2' ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${P[name] || P.file}"/></svg>`;

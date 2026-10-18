@@ -554,6 +554,123 @@
   }
 
   // ---------- Position ----------
+  // Numeric transform: a line's ends, length and angle, else the selection's box (several elements: the box around them).
+  const POS = {
+    line: [['X1', 'x1', 'x'], ['Y1', 'y1', 'y'], ['X2', 'x2', 'x'], ['Y2', 'y2', 'y'], ['Length', 'len', 'x'], ['Angle °', 'ang']],
+    box: [['Width', 'w', 'x'], ['Height', 'h', 'y'], ['X', 'x', 'x'], ['Y', 'y', 'y'], ['Rotate °', 'rot']],
+  };
+  const isLine = (els) => els.length === 1 && els[0].type === 'line';
+  function posValues(els) {
+    if (isLine(els)) {
+      const { p1, p2 } = R.lineEnds(els[0], E.page());
+      return { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, len: Math.hypot(p2.x - p1.x, p2.y - p1.y), ang: (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI };
+    }
+    if (els.length === 1) return { w: els[0].w, h: els[0].h, x: els[0].x, y: els[0].y, rot: els[0].rot || 0 };
+    // several elements have an angle only when they all share it
+    const rots = els.filter((x) => x.type !== 'line').map((x) => x.rot || 0);
+    return { ...E.unionBox(els), rot: rots.length && rots.every((r) => r === rots[0]) ? rots[0] : null };
+  }
+  // A typed value: a number or a sum ('1920/3'), a change to the current value ('*2', '/2', '+10', '+=10', '-=10'),
+  // or a share of the page's width or height (`base`) such as '50%'. NaN when it can't be read.
+  P.calc = (src, cur, base) => {
+    let s = String(src).trim().replace(/px|°|deg/gi, ''), op = '';
+    const m = s.match(/^([-+*/]=|[*/+])(.+)$/);
+    if (m) { op = m[1][0]; s = m[2]; }
+    if (s.includes('%')) {
+      if (!base) return NaN;
+      s = s.replace(/(\d+(?:\.\d*)?|\.\d+)%/g, (_, v) => `(${(v * base) / 100})`);
+    }
+    let v;
+    try { v = R.arith(s); } catch (e) { return NaN; }
+    return op === '+' ? cur + v : op === '-' ? cur - v : op === '*' ? cur * v : op === '/' ? cur / v : v;
+  };
+  // One field's value for the selection; `lock` keeps the proportions of a new size.
+  function posSet(els, key, v, lock) {
+    const cur = posValues(els);
+    if (isLine(els)) {
+      const el = els[0];
+      // typed ends leave the shapes a connector joined
+      E.bakeEnds(el, true);
+      if (key === 'len' || key === 'ang') {
+        const len = key === 'len' ? Math.max(0, v) : cur.len, a = ((key === 'ang' ? v : cur.ang) * Math.PI) / 180;
+        el.p2 = { x: el.p1.x + Math.cos(a) * len, y: el.p1.y + Math.sin(a) * len };
+      } else el['p' + key[1]] = { ...el['p' + key[1]], [key[0]]: v };
+      return M.syncLineBox(el);
+    }
+    if (els.length === 1) {
+      const el = els[0];
+      if (key === 'x' || key === 'y' || key === 'rot') return (el[key] = v);
+      v = Math.max(1, v);
+      const k = v / el[key];
+      if (el.type !== 'text') {
+        el[key] = v;
+        if (lock) el[key === 'w' ? 'h' : 'w'] *= k;
+        return;
+      }
+      // text rewraps to a new width; its height follows the text, so a height (or a size keeping the proportions) scales it
+      if (key === 'w' && !lock && !el.curve) el.w = v;
+      else { el.w *= k; el.size = Math.max(1, U.round(el.size * k, 1)); }
+      return R.fitText(el);
+    }
+    // several elements move, turn and scale as one, connectors from where they are drawn
+    els.forEach((x) => E.bakeEnds(x));
+    const b = E.unionBox(els);
+    if (key === 'x' || key === 'y') return E.moveEls(els, key === 'x' ? v - b.x : 0, key === 'y' ? v - b.y : 0);
+    if (key === 'rot') return E.rotateEls(els, U.clone(els), b.x + b.w / 2, b.y + b.h / 2, v - (cur.rot ?? 0));
+    if (b[key] < 1) return;
+    const k = Math.max(1, v) / b[key];
+    E.scaleEls(els, U.clone(els), b.x, b.y, key === 'w' || lock ? k : 1, key === 'h' || lock ? k : 1);
+  }
+  let posLive = null;
+  function posFields(els) {
+    const line = isLine(els), sel = E.sel.join(), vals = posValues(els), fields = [];
+    const fmt = (v) => (v == null ? '' : String(U.round(v, 1)));
+    // the panel isn't rebuilt while it is in use or during a drag; a field being typed in keeps what was typed
+    const show = (all) => {
+      const now = posValues(E.selEls());
+      for (const [k, inp] of fields) if (all || inp !== document.activeElement) { inp.value = fmt(now[k]); inp.placeholder = now[k] == null ? 'Mixed' : ''; }
+    };
+    // the ratio lock lasts while the selection does (the panel is rebuilt after edits)
+    const lockKey = E.d.id + ':' + sel;
+    const lock = h('input', { type: 'checkbox', checked: state.posLock?.key === lockKey ? state.posLock.on : els.length === 1 && ['image', 'icon', 'emoji'].includes(els[0].type) });
+    lock.addEventListener('change', () => (state.posLock = { key: lockKey, on: lock.checked }));
+    // a locked element or page refuses the value, and the field shows the real one again; arrow keys step it (one undo step per burst)
+    const apply = (key, base, inp, step = 0) => {
+      const now = E.selEls(), free = E.editEls(), cur = posValues(now)[key];
+      let v = P.calc(inp.value, cur ?? 0, base);
+      if (step) v = (Number.isFinite(v) ? v : cur ?? 0) + step;
+      if (Number.isFinite(v) && now.length && free.length === now.length && E.sel.join() === sel) {
+        posSet(now, key, v, lock.checked);
+        if (step) { E.changed({ commit: false }); E.commitSoon(); }
+        else E.changed();
+      }
+      show(true);
+    };
+    const field = ([label, key, axis]) => {
+      const base = axis === 'x' ? E.d.width : axis === 'y' ? E.d.height : 0;
+      const inp = h('input.input', { type: 'text', value: fmt(vals[key]), placeholder: vals[key] == null ? 'Mixed' : null, 'data-k': key, autocomplete: 'off', spellcheck: 'false' });
+      inp.addEventListener('change', () => apply(key, base, inp));
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          apply(key, base, inp, (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1));
+        } else if (e.key === 'Escape') {
+          // puts the value back and leaves the field (the selection stays)
+          e.stopPropagation();
+          show(true);
+          inp.blur();
+        }
+      });
+      fields.push([key, inp]);
+      return h('label.field.half', h('span', label), inp);
+    };
+    const grid = h('div.adv-grid', POS[line ? 'line' : 'box'].map(field));
+    posLive = { grid, sel, show };
+    return [grid, line ? h('p.muted.small', 'Drag the line ends to reshape it. Hold Shift for 45° angles.') : h('label.check', lock, ' Lock aspect ratio')];
+  }
+  EU.syncPosition = () => {
+    if (EU.panel === 'position' && EU.panelOpen && posLive?.grid.isConnected && posLive.sel === E.sel.join()) posLive.show(false);
+  };
   P.position = () => {
     const body = h('div', tabs([['arrange', 'Arrange'], ['layers', 'Layers']], state.posTab, (t) => { state.posTab = t; EU.renderPanel(); }));
     const els = E.selEls();
@@ -563,28 +680,7 @@
       body.append(section('Layer order', h('div.arr-grid', btn('forward', 'Forward', () => E.order('forward')), btn('backward', 'Backward', () => E.order('backward')), btn('tofront', 'To front', () => E.order('front')), btn('backward', 'To back', () => E.order('back')))));
       body.append(section(els.length > 1 ? 'Align elements' : 'Align to page', h('div.arr-grid', btn('up', 'Top', () => E.align('top')), btn('alignl', 'Left', () => E.align('left')), btn('spacing', 'Middle', () => E.align('middle')), btn('alignc', 'Centre', () => E.align('center')), btn('down', 'Bottom', () => E.align('bottom')), btn('alignr', 'Right', () => E.align('right')))));
       if (els.length > 2) body.append(section('Space evenly', h('div.arr-grid', btn('split', 'Horizontally', () => E.distribute('h')), btn('spacing', 'Vertically', () => E.distribute('v')))));
-      if (els.length === 1) {
-        const el = els[0];
-        const shown = (key) => U.round(key === 'rot' ? el.rot || 0 : el[key], 1);
-        const fields = [];
-        const field = (label, key, fn) => {
-          const inp = h('input.input', { type: 'number', value: shown(key) });
-          // the panel isn't rebuilt while it is in use, so the other fields (Height after Width) are updated here
-          // a locked element or page refuses the value, and the field shows the real one again
-          inp.addEventListener('change', () => {
-            const free = E.editEls().includes(el);
-            if (free) { fn(+inp.value); E.changed(); }
-            fields.forEach(([k, x]) => (x !== inp || !free) && (x.value = shown(k)));
-          });
-          fields.push([key, inp]);
-          return h('label.field.half', h('span', label), inp);
-        };
-        const ratio = el.h / el.w;
-        const lock = h('input', { type: 'checkbox', checked: ['image', 'icon', 'emoji'].includes(el.type) });
-        const wF = field('Width', 'w', (v) => { const old = el.w; el.w = Math.max(1, v); if (lock.checked) el.h = el.w * ratio; if (el.type === 'text') { el.size = U.round(el.size * (el.w / old), 1); R.fitText(el); } });
-        const hF = field('Height', 'h', (v) => { el.h = Math.max(1, v); if (lock.checked) el.w = el.h / ratio; });
-        body.append(section('Advanced', el.type === 'line' ? h('p.muted.small', 'Drag the line ends to reshape it. Hold Shift for 45° angles.') : h('div.adv-grid', wF, hF, field('X', 'x', (v) => (el.x = v)), field('Y', 'y', (v) => (el.y = v)), field('Rotate °', 'rot', (v) => (el.rot = v))), el.type !== 'line' ? h('label.check', lock, ' Lock aspect ratio') : null));
-      }
+      body.append(section('Advanced', posFields(els)));
     } else {
       const list = h('div.layers');
       const items = [...E.els()].reverse();
