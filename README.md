@@ -33,7 +33,8 @@ The builds are not code-signed, so your system may warn you the first time:
 - **Brand Kit:** logos, colour palettes, heading/subheading/body fonts, photos, icons and brand voice. Brand colours appear at the top of every colour picker.
 - **Sharing and teamwork:** comments with @mentions, replies and resolve; version history; shareable design files; save as template; content planner with reminders.
 - **Export:** PNG (with transparency), JPG, PDF Standard, PDF Print (300 dpi, bleed, crop marks), SVG, MP4/WebM video, animated GIF, PowerPoint (.pptx), single-file website (HTML) and design files. Multi-page exports come as a ZIP.
-- **Keyboard shortcuts:** `T` text, `R` rectangle, `C` circle, `L` line, `/` quick actions, `Ctrl/⌘+D` duplicate, `Ctrl/⌘+G` group, arrows to nudge, and more (see the Help button on the home screen).
+- **Keyboard shortcuts:** `T` text, `R` rectangle, `C` circle, `L` line, `/` quick actions, `Ctrl/⌘+D` duplicate, `Ctrl/⌘+G` group, arrows to nudge, `Ctrl/⌘+]` / `[` layer order, `Alt+A/H/D/W/V/S` align, `Shift+H/V` flip, `Ctrl/⌘+Shift+L` / `H` lock and hide, `Ctrl/⌘+Alt+C` / `V` copy and paste style, `Tab` to step through elements, `Enter` / `Esc` into and out of groups, and more (see the Help button on the home screen).
+- **Arranging:** align to the selection, a key object (the element Shift-clicked last) or the page; space elements evenly or by an exact gap; tidy up a rough layout into an evenly spaced row, column or grid. Groups move as one.
 - **Mobile:** the side rail becomes a bottom bar, panels slide up as sheets, and the toolbar scrolls sideways.
 
 ### Optional AI

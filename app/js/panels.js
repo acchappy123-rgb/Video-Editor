@@ -554,6 +554,18 @@
   }
 
   // ---------- Position ----------
+  // What several elements align to: the box around them, the key object (Shift-click one, or pick it here) or the page.
+  function alignTo(us) {
+    const key = E.keyUnit(us);
+    const seg = h('div.seg.align-to', { role: 'group', 'aria-label': 'Align to' }, [['selection', 'Selection'], ['key', 'Key object'], ['page', 'Page']].map(([v, label]) =>
+      h('button.seg-btn' + (E.alignTo === v ? '.on' : ''), { 'aria-pressed': String(E.alignTo === v), onclick: () => { E.alignTo = v; EU.renderPanel(); } }, label)));
+    if (E.alignTo !== 'key') return h('div', h('span.mini-label', 'Align to'), seg);
+    // named with where it is, so look-alike shapes can be told apart
+    const name = (u) => (u.els.length > 1 ? `Group of ${u.els.length}` : layerName(u.els[0])) + ` · ${Math.round(u.box.x)}, ${Math.round(u.box.y)}`;
+    const pick = h('select.input', {}, h('option', { value: '' }, 'None – Shift-click an element'), us.map((u) => h('option', { value: u.els[0].id, selected: u === key ? true : null }, name(u))));
+    pick.addEventListener('change', () => { E.keyId = pick.value || null; E.drawOverlay(); });
+    return h('div', h('span.mini-label', 'Align to'), seg, h('label.field', h('span', 'Key object'), pick));
+  }
   P.position = () => {
     const body = h('div', tabs([['arrange', 'Arrange'], ['layers', 'Layers']], state.posTab, (t) => { state.posTab = t; EU.renderPanel(); }));
     const els = E.selEls();
@@ -561,8 +573,15 @@
       if (!els.length) { body.append(h('p.muted', 'Select an element to arrange it.')); return { title: 'Position', body }; }
       const btn = (icon, label, fn) => h('button.arr-btn', { onclick: fn }, U.ic(icon, 16), label);
       body.append(section('Layer order', h('div.arr-grid', btn('forward', 'Forward', () => E.order('forward')), btn('backward', 'Backward', () => E.order('backward')), btn('tofront', 'To front', () => E.order('front')), btn('backward', 'To back', () => E.order('back')))));
-      body.append(section(els.length > 1 ? 'Align elements' : 'Align to page', h('div.arr-grid', btn('up', 'Top', () => E.align('top')), btn('alignl', 'Left', () => E.align('left')), btn('spacing', 'Middle', () => E.align('middle')), btn('alignc', 'Centre', () => E.align('center')), btn('down', 'Bottom', () => E.align('bottom')), btn('alignr', 'Right', () => E.align('right')))));
-      if (els.length > 2) body.append(section('Space evenly', h('div.arr-grid', btn('split', 'Horizontally', () => E.distribute('h')), btn('spacing', 'Vertically', () => E.distribute('v')))));
+      const us = E.units(els), multi = us.length > 1;
+      body.append(section(multi ? 'Align' : 'Align to page', multi ? alignTo(us) : null, h('div.arr-grid', btn('up', 'Top', () => E.align('top')), btn('alignl', 'Left', () => E.align('left')), btn('spacing', 'Middle', () => E.align('middle')), btn('alignc', 'Centre', () => E.align('center')), btn('down', 'Bottom', () => E.align('bottom')), btn('alignr', 'Right', () => E.align('right')))));
+      if (multi) {
+        // an empty Spacing spreads them evenly (tidy up keeps their average spacing)
+        const gap = h('input.input', { type: 'number', step: 1, value: state.gap ?? '', placeholder: 'Auto' });
+        gap.addEventListener('input', () => (state.gap = gap.value));
+        const g = () => (gap.value.trim() === '' ? undefined : +gap.value);
+        body.append(section('Space evenly', h('label.field.gap-field', h('span', 'Spacing (px)'), gap), h('div.arr-grid', btn('split', 'Horizontally', () => E.distribute('h', g())), btn('spacing', 'Vertically', () => E.distribute('v', g())), btn('grid', 'Tidy up', () => E.tidy(g())))));
+      }
       if (els.length === 1) {
         const el = els[0];
         const shown = (key) => U.round(key === 'rot' ? el.rot || 0 : el[key], 1);
@@ -591,7 +610,7 @@
       items.forEach((el) => {
         const ctx = { asset: (id) => S.assetURL(id), idp: 'l' + el.id, defs: [], page: E.page() };
         const inner = R.elementSVG(el, ctx);
-        const row = h('div.layer' + (E.sel.includes(el.id) ? '.on' : ''), { draggable: 'true', onclick: (e) => E.select([el.id], e.shiftKey) },
+        const row = h('div.layer' + (E.sel.includes(el.id) ? '.on' : ''), { draggable: 'true', onclick: (e) => E.select([el.id], e.shiftKey, e.shiftKey ? el.id : undefined) },
           h('span.layer-thumb', { html: `<svg viewBox="${Math.round(el.x)} ${Math.round(el.y)} ${Math.max(1, Math.round(el.w))} ${Math.max(1, Math.round(el.h))}" width="40" height="30"><defs>${ctx.defs.join('')}</defs>${inner}</svg>` }),
           h('span.layer-name', layerName(el)),
           h('button.icon-btn.sm', { title: el.hidden ? 'Show' : 'Hide', onclick: (e) => { e.stopPropagation(); if (!E.canEdit()) return; el.hidden = !el.hidden; E.changed(); EU.renderPanel(); } }, U.ic(el.hidden ? 'eyeoff' : 'eye', 14)),

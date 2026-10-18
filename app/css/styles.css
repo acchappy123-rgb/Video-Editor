@@ -108,6 +108,7 @@ input[type=range] { accent-color: var(--accent-2); width: 100%; }
 .seg { display: flex; gap: 4px; background: var(--surface-2); border-radius: 8px; padding: 3px; margin: 6px 0; flex-wrap: wrap; }
 .seg-btn { flex: 1; padding: 5px 8px; border-radius: 6px; font-size: 12px; text-transform: capitalize; }
 .seg-btn.on { background: var(--surface); box-shadow: var(--shadow); color: var(--accent-2); font-weight: 600; }
+.seg.align-to .seg-btn { text-transform: none; }
 
 /* colour picker */
 .color-picker { padding: 12px; width: 296px; }
@@ -318,6 +319,8 @@ body.tool-motion .page-frame { cursor: move; }
 .sel-box.group { border-style: dashed; }
 .sel-box.locked { border-color: #9aa0ad; }
 .sel-member { position: absolute; border: 1px dashed var(--sel); opacity: .6; }
+/* the key object several elements can align to */
+.sel-key { position: absolute; border: 3px solid var(--sel); border-radius: 3px; }
 .sel-outline { position: absolute; border: 1px dashed var(--sel); }
 .hover-box { position: absolute; border: 2px solid rgba(139, 61, 255, .55); display: none; }
 .handle { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 1px solid #c3c3cc; box-shadow: 0 1px 3px rgba(0, 0, 0, .3); pointer-events: auto; transform: translate(-50%, -50%); touch-action: none; }

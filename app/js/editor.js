@@ -29,6 +29,7 @@
     E.sel = [];
     E.tool = null;
     E.editingId = E.editEl = E.textArea = E.textAreaStyle = E.enteredGroup = null;
+    E.keyId = null;
     E.hist = [snap()];
     E.hi = 0;
     E.dirty = E.dirtySinceVersion = false;
@@ -414,10 +415,12 @@
     const a = document.activeElement;
     if (a && a !== E.textArea && a.matches('input, select, textarea') && a.closest(scope)) a.blur();
   };
-  E.select = (ids, add = false) => {
+  // `key`: the key object (E.keyUnit) after the change; a new selection has none, an addition keeps it
+  E.select = (ids, add = false, key) => {
     commitField();
     E.flushCommit();
     E.sel = add ? [...new Set([...E.sel, ...ids])] : ids;
+    E.keyId = key !== undefined ? key : add ? E.keyId : null;
     if (E.editingId && !E.sel.includes(E.editingId)) E.finishText();
     E.drawOverlay();
     A.EU.refreshToolbar();
@@ -465,6 +468,8 @@
       style: { left: box.x * z + 'px', top: box.y * z + 'px', width: box.w * z + 'px', height: box.h * z + 'px', transform: `rotate(${rot}deg)` },
     });
     if (!single) for (const e of els) { const bb = E.bbox(e); b.overlay.appendChild(U.h('div.sel-member', { style: { left: bb.x * z + 'px', top: bb.y * z + 'px', width: bb.w * z + 'px', height: bb.h * z + 'px' } })); }
+    const key = !single && E.keyUnit();
+    if (key) { const kb = key.box; b.overlay.appendChild(U.h('div.sel-key', { style: { left: kb.x * z - 3 + 'px', top: kb.y * z - 3 + 'px', width: kb.w * z + 6 + 'px', height: kb.h * z + 6 + 'px' } })); }
     if (!locked && E.editingId == null) {
       const t = single?.type;
       const corners = !(t === 'text' && single.curve) ? ['nw', 'ne', 'sw', 'se'] : ['nw', 'ne', 'sw', 'se'];
@@ -623,9 +628,11 @@
     // stay inside an entered group only while the selection is still in it
     const inGroup = el.groupId && E.enteredGroup === el.groupId && E.selEls().some((x) => x.groupId === el.groupId);
     const ids = inGroup ? [el.id] : groupMembers(el);
+    // the element Shift-clicked into the selection becomes its key object
     if (e.shiftKey) {
       const has = ids.every((x) => E.sel.includes(x));
-      E.select(has ? E.sel.filter((x) => !ids.includes(x)) : [...E.sel, ...ids]);
+      if (has) E.select(E.sel.filter((x) => !ids.includes(x)), false, ids.includes(E.keyId) ? null : E.keyId);
+      else E.select(ids, true, el.id);
       return;
     }
     if (!ids.every((x) => E.sel.includes(x))) {
@@ -1421,7 +1428,10 @@
     }
     E.changed();
   };
-  E.selectAll = () => E.select(E.els().filter((e) => !e.hidden).map((e) => e.id));
+  E.selectAll = () => {
+    E.enteredGroup = null;
+    E.select(E.els().filter((e) => !e.hidden).map((e) => e.id));
+  };
   E.group = () => {
     const els = E.selEls();
     if (els.length < 2 || E.editEls().length < els.length) return;
@@ -1476,40 +1486,106 @@
     }
     E.changed();
   };
-  E.align = (how) => {
-    const els = E.selEls().filter((e) => !e.locked);
-    if (!els.length || !E.canEdit()) return;
-    const ref = els.length > 1 ? E.unionBox(els) : { x: 0, y: 0, w: E.d.width, h: E.d.height };
+  // ---------- arrange: align, distribute, tidy up ----------
+  // The selection as the units that move together: a whole selected group (unless it is the group entered), else each element.
+  E.units = (els = E.selEls()) => {
+    const map = new Map();
     for (const el of els) {
-      const b = E.bbox(el);
-      let dx = 0, dy = 0;
-      if (how === 'left') dx = ref.x - b.x;
-      if (how === 'center') dx = ref.x + ref.w / 2 - (b.x + b.w / 2);
-      if (how === 'right') dx = ref.x + ref.w - (b.x + b.w);
-      if (how === 'top') dy = ref.y - b.y;
-      if (how === 'middle') dy = ref.y + ref.h / 2 - (b.y + b.h / 2);
-      if (how === 'bottom') dy = ref.y + ref.h - (b.y + b.h);
-      el.x += dx; el.y += dy;
+      const whole = el.groupId && el.groupId !== E.enteredGroup && groupMembers(el).every((id) => E.sel.includes(id));
+      const k = whole ? 'g:' + el.groupId : el.id;
+      map.set(k, [...(map.get(k) || []), el]);
+    }
+    return [...map.values()].map((els) => ({ els, box: E.unionBox(els), locked: els.some((x) => x.locked) }));
+  };
+  // The key object: the unit last Shift-clicked into a selection of two or more; it stays put when aligned to.
+  E.keyUnit = (us) => {
+    if (!E.keyId || !E.sel.includes(E.keyId)) return null;
+    us = us || E.units();
+    return (us.length > 1 && us.find((u) => u.els.some((x) => x.id === E.keyId))) || null;
+  };
+  // What several elements align to: 'selection', 'key' or 'page' (the Position panel's 'Align to').
+  E.alignTo = 'selection';
+  // connectors move from where they are drawn; a lone one leaves its shapes, as when nudged
+  const moveUnit = (u, dx, dy, detach = false) => {
+    if (!dx && !dy) return;
+    for (const el of u.els) {
+      E.bakeEnds(el, detach);
+      el.x += dx;
+      el.y += dy;
       if (el.p1) { el.p1.x += dx; el.p1.y += dy; el.p2.x += dx; el.p2.y += dy; }
+    }
+    u.box = { ...u.box, x: u.box.x + dx, y: u.box.y + dy };
+  };
+  // to: 'page', 'selection' (the box around it), 'key' (the key object), or 'auto': the page for one element or group,
+  // else E.alignTo. Locked elements stay put (and still count in the selection's box).
+  E.align = (how, { to = 'auto' } = {}) => {
+    if (!E.editEls().length) return;
+    const us = E.units(), key = E.keyUnit(us);
+    if (to === 'auto') to = us.length < 2 ? 'page' : E.alignTo;
+    if (to === 'key' && !key) to = 'selection';
+    const ref = to === 'page' ? { x: 0, y: 0, w: E.d.width, h: E.d.height } : to === 'key' ? key.box : E.unionBox(E.selEls());
+    const lone = us.length === 1 && us[0].els.length === 1 && us[0].els[0].type === 'line';
+    for (const u of us) {
+      if (u.locked || (to === 'key' && u === key)) continue;
+      const b = u.box;
+      const dx = how === 'left' ? ref.x - b.x : how === 'center' ? ref.x + ref.w / 2 - (b.x + b.w / 2) : how === 'right' ? ref.x + ref.w - (b.x + b.w) : 0;
+      const dy = how === 'top' ? ref.y - b.y : how === 'middle' ? ref.y + ref.h / 2 - (b.y + b.h / 2) : how === 'bottom' ? ref.y + ref.h - (b.y + b.h) : 0;
+      moveUnit(u, dx, dy, lone);
     }
     E.changed();
   };
-  E.distribute = (axis) => {
-    const els = E.selEls().filter((e) => !e.locked);
-    if (!E.canEdit()) return;
-    if (els.length < 3) return U.toast('Select 3 or more elements to distribute');
+  const freeUnits = (what) => {
+    if (!E.editEls().length) return null;
+    const us = E.units().filter((u) => !u.locked);
+    if (us.length > 1) return us;
+    U.toast('Select 2 or more unlocked elements to ' + what);
+    return null;
+  };
+  // Space the elements (or groups) along 'h' or 'v': evenly between the outer two, or `gap` apart starting from the first.
+  E.distribute = (axis, gap) => {
+    const us = freeUnits('space them');
+    if (!us) return;
     const k = axis === 'h' ? 'x' : 'y', s = axis === 'h' ? 'w' : 'h';
-    const sorted = [...els].sort((a, b) => E.bbox(a)[k] - E.bbox(b)[k]);
-    const box = E.unionBox(els);
-    const total = sorted.reduce((t, e) => t + E.bbox(e)[s], 0);
-    const gap = (box[s] - total) / (sorted.length - 1);
-    let pos = box[k];
-    for (const el of sorted) {
-      const b = E.bbox(el);
-      const d = pos - b[k];
-      el[k] += d;
-      if (el.p1) { el.p1[k] += d; el.p2[k] += d; }
-      pos += b[s] + gap;
+    us.sort((a, b) => a.box[k] - b.box[k] || a.box[s] - b.box[s]);
+    const end = Math.max(...us.map((u) => u.box[k] + u.box[s]));
+    const g = Number.isFinite(gap) ? gap : (end - us[0].box[k] - us.reduce((t, u) => t + u.box[s], 0)) / (us.length - 1);
+    let pos = us[0].box[k];
+    for (const u of us) {
+      const d = pos - u.box[k];
+      pos += u.box[s] + g;
+      moveUnit(u, k === 'x' ? d : 0, k === 'y' ? d : 0);
+    }
+    E.changed();
+  };
+  // Tidy up: rows of roughly level elements, each read left to right, become an evenly spaced grid (or a row or a
+  // column) from the selection's top-left corner, `gap` apart or at the average spacing they have now.
+  E.tidy = (gap) => {
+    const us = freeUnits('tidy them up');
+    if (!us) return;
+    const cy = (u) => u.box.y + u.box.h / 2;
+    const rows = [];
+    for (const u of [...us].sort((a, b) => cy(a) - cy(b))) {
+      const r = rows[rows.length - 1];
+      if (r && Math.abs(cy(u) - r.cy) < Math.max(r.h, u.box.h) / 2) {
+        r.cy = (r.cy * r.us.length + cy(u)) / (r.us.length + 1);
+        r.h = (r.h * r.us.length + u.box.h) / (r.us.length + 1);
+        r.us.push(u);
+      } else rows.push({ us: [u], cy: cy(u), h: u.box.h });
+    }
+    rows.forEach((r) => r.us.sort((a, b) => a.box.x - b.box.x));
+    // overlapping neighbours don't count towards the spacing
+    const mean = (a) => ((a = a.filter((v) => v >= 0)).length ? a.reduce((t, v) => t + v, 0) / a.length : null);
+    const gx = mean(rows.flatMap((r) => r.us.slice(1).map((u, i) => u.box.x - (r.us[i].box.x + r.us[i].box.w))));
+    const gy = mean(rows.slice(1).map((r, i) => Math.min(...r.us.map((u) => u.box.y)) - Math.max(...rows[i].us.map((u) => u.box.y + u.box.h))));
+    const dflt = Math.round(Math.min(E.d.width, E.d.height) / 40);
+    const sx = Number.isFinite(gap) ? gap : Math.round(gx ?? gy ?? dflt), sy = Number.isFinite(gap) ? gap : Math.round(gy ?? gx ?? dflt);
+    const colW = Array.from({ length: Math.max(...rows.map((r) => r.us.length)) }, (_, j) => Math.max(...rows.map((r) => r.us[j]?.box.w || 0)));
+    const o = E.unionBox(us.flatMap((u) => u.els));
+    let y = o.y;
+    for (const r of rows) {
+      let x = o.x;
+      r.us.forEach((u, j) => { moveUnit(u, x - u.box.x, y - u.box.y); x += colW[j] + sx; });
+      y += Math.max(...r.us.map((u) => u.box.h)) + sy;
     }
     E.changed();
   };
@@ -1521,8 +1597,9 @@
     E.sel = [];
     E.changed();
   };
+  // a line has no flip (its ends say which way it goes)
   E.flip = (axis) => {
-    const els = E.editEls();
+    const els = E.editEls().filter((el) => el.type !== 'line');
     if (!els.length) return;
     for (const el of els) {
       if (axis === 'h') el.flipX = !el.flipX;
@@ -1530,6 +1607,69 @@
     }
     E.changed();
   };
+  // Hide the selection, or show it when all of it is hidden; with nothing selected, show the page's hidden elements.
+  E.toggleHidden = () => {
+    if (!E.sel.length) {
+      const hid = E.els().filter((x) => x.hidden && !x.locked);
+      if (!hid.length || !E.canEdit()) return;
+      hid.forEach((x) => delete x.hidden);
+      E.sel = hid.map((x) => x.id);
+      E.changed();
+      return A.EU.onSelectionChange?.();
+    }
+    const els = E.editEls();
+    if (!els.length) return;
+    const hide = els.some((x) => !x.hidden);
+    els.forEach((x) => (hide ? (x.hidden = true) : delete x.hidden));
+    E.changed();
+    if (hide) U.toast('Hidden – press Ctrl+Shift+H to show it again');
+  };
+
+  // ---------- keyboard selection: Tab through elements, enter and leave groups ----------
+  const inGroup = () => E.enteredGroup && E.selEls().some((x) => x.groupId === E.enteredGroup);
+  E.enterGroup = (g) => {
+    const first = E.els().find((x) => x.groupId === g && !x.hidden) || E.els().find((x) => x.groupId === g);
+    if (!first) return;
+    E.enteredGroup = g;
+    E.select([first.id]);
+  };
+  E.exitGroup = () => {
+    const ids = E.els().filter((x) => x.groupId === E.enteredGroup).map((x) => x.id);
+    E.enteredGroup = null;
+    E.select(ids);
+  };
+  // The next (dir 1) or previous (-1) visible element in layer order: a group is one stop, and inside an entered group
+  // its members are. False when there is nothing to select.
+  E.cycle = (dir) => {
+    const inside = inGroup() && E.selEls().every((x) => x.groupId === E.enteredGroup);
+    const stops = [];
+    for (const el of E.els()) {
+      if (inside && el.groupId !== E.enteredGroup) continue;
+      const ids = inside ? [el.id] : groupMembers(el);
+      if (ids[0] === el.id && ids.some((id) => !E.byId(id).hidden)) stops.push(ids);
+    }
+    if (!stops.length) return false;
+    const on = stops.map((ids, i) => (ids.some((id) => E.sel.includes(id)) ? i : -1)).filter((i) => i >= 0);
+    const i = !on.length ? (dir > 0 ? 0 : stops.length - 1) : (on[dir > 0 ? on.length - 1 : 0] + dir + stops.length) % stops.length;
+    if (!inside) E.enteredGroup = null;
+    // a menu or picker opened for the last selection would edit the next one
+    U.closePop();
+    E.select(stops[i]);
+    reveal();
+    return true;
+  };
+  // scroll the selection into view when it is outside the canvas (the overlay is drawn again for the new view)
+  function reveal() {
+    const b = E.blocks[E.pi], box = E.unionBox(E.selEls()), wrap = E.scrollEl;
+    if (!b || !box || !wrap) return;
+    const r = b.svg.getBoundingClientRect(), s = wrap.getBoundingClientRect(), z = E.zoom, pad = 40;
+    const by = (a, len, lo, view) => (a < lo + pad ? a - lo - pad : a + len > lo + view - pad ? Math.min(a + len - lo - view + pad, a - lo - pad) : 0);
+    const dx = by(r.left + box.x * z, box.w * z, s.left, wrap.clientWidth), dy = by(r.top + box.y * z, box.h * z, s.top, wrap.clientHeight);
+    if (!dx && !dy) return;
+    wrap.scrollLeft += dx;
+    wrap.scrollTop += dy;
+    E.drawOverlay();
+  }
 
   // Scale every page's contents to a new size (Resize / Magic Switch).
   E.resizeDesign = (d, W, H) => {
@@ -1557,6 +1697,37 @@
   // ---------- keyboard & clipboard ----------
   // Fields that take typed text; sliders, checkboxes and buttons leave the shortcuts working.
   const typingIn = (el) => !!el && (el.tagName === 'TEXTAREA' || el.isContentEditable || (el.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'color', 'button', 'submit', 'reset', 'file'].includes(el.type)));
+  // The key pressed with Shift or Alt/Option, which change e.key ('}' for Shift+], 'å' for Option+A): the plain letter
+  // when e.key still is one (other keyboard layouts), else what e.code names.
+  const BRACKET = { '[': '[', '{': '[', BracketLeft: '[', ']': ']', '}': ']', BracketRight: ']' };
+  const keyOf = (e, k) => (/^[a-z]$/.test(k) ? k : BRACKET[k] || BRACKET[e.code] || (/^Key[A-Z]$/.test(e.code) ? e.code[3].toLowerCase() : k));
+  const ALIGN_KEYS = { a: 'left', h: 'center', d: 'right', w: 'top', v: 'middle', s: 'bottom' };
+  // Layer order, copy/paste style, lock, hide, align and flip. True when the key was one of these.
+  function powerKey(e, k, mod, stop) {
+    if (E.editingId) return false;
+    const c = keyOf(e, k), any = E.sel.length > 0;
+    if (mod && !e.altKey && (c === ']' || c === '[')) {
+      stop();
+      if (any) E.order(c === ']' ? (e.shiftKey ? 'front' : 'forward') : e.shiftKey ? 'back' : 'backward');
+    } else if (mod && e.altKey && !e.shiftKey && (c === 'c' || c === 'v')) {
+      stop();
+      if (c === 'c') E.copyStyle();
+      else E.pasteStyle();
+    } else if (mod && e.shiftKey && !e.altKey && c === 'l') {
+      stop();
+      if (any || E.page().locked) E.toggleLock();
+    } else if (mod && e.shiftKey && !e.altKey && c === 'h') {
+      stop();
+      E.toggleHidden();
+    } else if (!mod && e.altKey && !e.shiftKey && ALIGN_KEYS[c] && any) {
+      stop();
+      E.align(ALIGN_KEYS[c]);
+    } else if (!mod && !e.altKey && e.shiftKey && (c === 'h' || c === 'v') && any) {
+      stop();
+      E.flip(c);
+    } else return false;
+    return true;
+  }
   E.onKey = (e) => {
     if (A.app.view !== 'editor' || !E.d) return;
     const ae = document.activeElement;
@@ -1573,6 +1744,7 @@
       else if (k !== 'tab' && !((k === 'enter' || k === ' ') && ae?.closest('button'))) E.textArea?.focus({ preventScroll: true });
       return;
     }
+    if (powerKey(e, k, mod, stop)) return;
     if (mod) {
       if (k === 'z') { stop(); e.shiftKey ? E.redo() : E.undo(); }
       else if (k === 'y') { stop(); E.redo(); }
@@ -1600,10 +1772,16 @@
       else if (k === 'enter' && E.layout() === 'strip') { stop(); A.Present.start(); }
       return;
     }
+    // Tab steps through the elements while nothing else has focus; the toolbar and panels keep their Tab order
+    if (k === 'tab') {
+      if (!e.altKey && (!ae || ae === document.body) && E.cycle(e.shiftKey ? -1 : 1)) stop();
+      return;
+    }
+    // Esc in an entered group goes back to the whole group, then deselects
     if (k === 'escape') {
       if (E.tool) { E.tool = null; A.EU.refreshTool(); }
-      else if (E.enteredGroup) { E.enteredGroup = null; E.deselect(); }
-      else E.deselect();
+      else if (inGroup()) E.exitGroup();
+      else { E.enteredGroup = null; E.deselect(); }
       return;
     }
     if (k === 'delete' || k === 'backspace') { stop(); return E.deleteSel(); }
@@ -1617,8 +1795,11 @@
       const s = e.shiftKey ? 10 : 1;
       return E.nudge(k === 'arrowleft' ? -s : k === 'arrowright' ? s : 0, k === 'arrowup' ? -s : k === 'arrowdown' ? s : 0);
     }
+    // Enter on a whole group selects its first member (Shift+Enter goes back), else edits the selected text
     if (k === 'enter') {
-      const el = E.selEls()[0];
+      const els = E.selEls(), el = els[0];
+      if (e.shiftKey && inGroup()) { stop(); return E.exitGroup(); }
+      if (els.length > 1 && el.groupId && E.units(els).length === 1 && !ae?.closest?.('button, a[href], summary')) { stop(); return E.enterGroup(el.groupId); }
       if (el && (el.type === 'text' || el.type === 'shape')) { stop(); E.editText(el); }
       return;
     }
