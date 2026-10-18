@@ -59,7 +59,7 @@
   };
 
   // ---------- imports ----------
-  const FONT_EXT = /\.(ttf|otf|woff2?)$/i;
+  const FONT_EXT = /\.(ttf|otf|woff2?)$/i, VIDEO_EXT = /\.(mp4|m4v|webm|mov|mkv|ogv)$/i;
   app.importFile = async (f, { toEditor = false } = {}) => {
     const inEditor = toEditor && app.view === 'editor' && A.E.d;
     try {
@@ -97,18 +97,20 @@
         else U.toast('Uploaded ' + f.name, 'ok');
         return a;
       }
-      if (f.type.startsWith('audio/')) {
-        const a = await S.addAsset(f, { name: f.name });
+      // a video file without a picture is a soundtrack
+      const video = f.type.startsWith('video/') || (!f.type && VIDEO_EXT.test(f.name)) ? await A.V.importVideo(f) : null;
+      if (video?.kind === 'video') {
+        if (inEditor) await A.V.addToPage(video);
+        else U.toast('Uploaded ' + f.name, 'ok');
+        return video;
+      }
+      if (f.type.startsWith('audio/') || video) {
+        const a = video || (await S.addAsset(f, { name: f.name }));
         if (inEditor) {
-          A.E.d.audio = a.id;
-          A.E.changed({ all: true });
+          A.V.setTrack(a.id);
           U.toast('Soundtrack added', 'ok');
         } else U.toast('Uploaded ' + f.name, 'ok');
         return a;
-      }
-      if (f.type.startsWith('video/')) {
-        U.toast('Video clips aren’t supported yet – add audio or images instead.', 'error');
-        return;
       }
       U.toast('Unsupported file: ' + f.name, 'error');
     } catch (e) {

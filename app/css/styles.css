@@ -388,8 +388,48 @@ body.tool-motion .page-frame { cursor: move; }
 .tl-trans { width: 22px; height: 22px; border-radius: 50%; margin: 0 2px; display: grid; place-items: center; color: var(--muted); flex: none; }
 .tl-trans:hover, .tl-trans.on { background: var(--accent-soft); color: var(--accent-2); }
 .tl-add { width: 44px; height: 64px; border: 2px dashed var(--border); border-radius: 8px; margin-left: 8px; display: grid; place-items: center; flex: none; color: var(--muted); }
-.tl-audio { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; height: 26px; padding: 0 10px; border-radius: 6px; background: #e0f7f1; color: #087a5b; font-size: 12px; font-weight: 600; }
-.tl-audio.add { background: none; border: 1px dashed var(--border); color: var(--muted); }
+.tl-audio { position: relative; display: flex; align-items: center; gap: 4px; margin-top: 6px; height: 26px; min-width: 120px; padding: 0 2px 0 8px; box-sizing: border-box; overflow: hidden; border-radius: 6px; background: #e0f7f1; color: #087a5b; font-size: 12px; font-weight: 600; }
+.tl-audio.add { display: inline-flex; min-width: 0; padding: 0 10px; background: none; border: 1px dashed var(--border); color: var(--muted); }
+.tl-audio .icon-btn { position: relative; flex: none; color: inherit; }
+/* fades: the silent corner of the ramp is faded out */
+.tl-fade { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; --fade: color-mix(in srgb, var(--surface) 75%, transparent); }
+.tl-fade.in { left: 0; background: linear-gradient(to bottom right, var(--fade) 50%, transparent 50%); }
+.tl-fade.out { right: 0; background: linear-gradient(to bottom left, var(--fade) 50%, transparent 50%); }
+/* playhead: a ruler above the page blocks (drag or arrow keys), a line across them */
+.tl-lane { position: relative; display: inline-block; vertical-align: top; padding-top: 18px; }
+.tl-ruler { position: absolute; left: 0; right: 0; top: 0; height: 16px; border-bottom: 1px solid var(--border); cursor: ew-resize; touch-action: none; }
+.tl-ruler:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+.tl-tick { position: absolute; top: 0; height: 15px; border-left: 1px solid var(--border); padding-left: 2px; font-size: 9px; line-height: 10px; color: var(--muted); white-space: nowrap; pointer-events: none; }
+.tl-head { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; margin-left: -1px; background: #ff3b5c; pointer-events: none; z-index: 2; }
+.tl-knob { position: absolute; top: 0; left: -6px; width: 14px; height: 15px; border-radius: 3px 3px 7px 7px; background: #ff3b5c; pointer-events: auto; cursor: ew-resize; touch-action: none; }
+.tl-clip { position: absolute; top: 0; height: 5px; background: #00c4cc; border-radius: 0 0 3px 3px; pointer-events: none; }
+.tl-time { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tl-audio-btn { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; color: inherit; font: inherit; height: 100%; }
+.tl-audio-btn:focus-visible { outline: 2px solid var(--accent-2); outline-offset: -2px; border-radius: 6px; }
+.tl-audio-name { min-width: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-audio-opts { display: inline-flex; opacity: .8; }
+.tl-audio-opts[hidden] { display: none; }
+.tl-audio-pop { width: 280px; }
+/* a selected clip's mini player */
+.vid-ctl { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: rgba(20, 20, 26, .75); color: #fff; pointer-events: auto; max-width: calc(100% - 16px); z-index: 3; }
+.vc-play { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: #fff; background: rgba(255, 255, 255, .18); flex: none; }
+.vc-play:focus-visible, .vc-range:focus-visible { outline: 2px solid #fff; }
+.vc-range { width: 140px; min-width: 40px; flex: 1 1 auto; accent-color: #fff; }
+.vc-time { font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (pointer: coarse) { .vc-play { width: 36px; height: 36px; } }
+/* video panel: trim bar over a filmstrip, the frame at the handle above it */
+.trim-prev { background: #111; border-radius: 8px; overflow: hidden; display: grid; place-items: center; margin-bottom: 8px; }
+.trim-frame { display: block; width: 100%; height: auto; max-height: 180px; object-fit: contain; }
+.trim-bar { position: relative; height: 44px; margin: 6px 8px; touch-action: none; }
+.trim-strip { position: absolute; inset: 0; border-radius: 6px; background: #222 center / 100% 100% no-repeat; opacity: .6; }
+.trim-keep { position: absolute; top: 0; bottom: 0; border: 3px solid var(--accent-2); border-radius: 6px; background: rgba(139, 61, 255, .12); pointer-events: none; }
+.trim-h { position: absolute; top: -5px; bottom: -5px; width: 14px; margin-left: -7px; border-radius: 4px; background: var(--accent-2); cursor: ew-resize; touch-action: none; }
+.trim-h::after { content: ''; position: absolute; left: 6px; top: 14px; bottom: 14px; width: 2px; border-radius: 1px; background: #fff; }
+.trim-h:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+@media (pointer: coarse) { .trim-h::before { content: ''; position: absolute; inset: -6px -12px; } }
+.trim-fields .num { width: 72px; margin-left: 4px; }
+.vid-item { position: relative; display: grid; place-items: center; background: #1c1c22; color: #fff; }
+.vid-dur { position: absolute; right: 4px; bottom: 4px; background: rgba(0, 0, 0, .65); color: #fff; font-size: 11px; padding: 0 4px; border-radius: 3px; }
 .ed-bottom { height: 40px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 12px; background: var(--surface); border-top: 1px solid var(--border); }
 .zoom-range { width: 120px; }
 .zoom-label, .page-info { font-size: 12px; font-weight: 600; padding: 4px 8px; border-radius: 6px; white-space: nowrap; }
@@ -618,7 +658,11 @@ body.tool-motion .page-frame { cursor: move; }
   .tl-total { display: none; }
   .tl-scroll { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
   .tl-block, .tl-add { height: 32px; }
-  .tl-audio { margin-top: 0; flex: none; }
+  /* the soundtrack sits beside the pages instead of under them */
+  .tl-lane { display: inline-flex; align-items: center; gap: 8px; }
+  .tl-lane .tl-audio { width: auto !important; min-width: 0; margin-top: 0; flex: none; }
+  .tl-fade { display: none; }
+  .tl-audio-name { max-width: 120px; }
   .ed-bottom { height: 32px; }
 }
 /* narrow phones: the top bar fits without squeezing its buttons (Share stays readable to screen readers) */
